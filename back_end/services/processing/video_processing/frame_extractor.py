@@ -1,26 +1,23 @@
 import imagehash
 import subprocess
 from dataclasses import dataclass
-# import torch
+import torch
 from PIL import Image
 from pathlib import Path
 import os
 from tqdm import tqdm
 
 class FrameExtractor:
-
     def __init__(self,
-                #  device = 'cuda',
+                 device = 'cuda',
                  output_dir = '',
-                 max_interval = 15,
-                 min_interval = 5,
                  save_frames = True):
-        # self.device = torch.device(device if torch.is_available() else 'cpu')
+        self.device = torch.device(device if torch.is_available() else 'cpu')
         self.output_dir = Path(output_dir)
         self.save_frames = save_frames
-        # self.device = device
         if save_frames and output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True)
+
     def extract_frames(self, video_path, output_dir):
         """Extract I and P frames using ffmpeg 
         Args: 

@@ -5,3 +5,6 @@ transformers
 fastapi[standard]
 opencv-python
 numpy
+rank-bm25
+FlagEmbedding
+qdrant-client

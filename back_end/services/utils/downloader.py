@@ -12,6 +12,7 @@ def extract_video_id(url):
         if match:
             return match.group(1)
     raise ValueError(f"Could not extract video ID from URL: {url}")
+
 def download_video(url, output_path):
     video_id = extract_video_id(url)
     output_path = os.path.join(output_path, f"{video_id}.mp4")

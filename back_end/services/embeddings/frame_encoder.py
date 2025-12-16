@@ -25,8 +25,7 @@ class FrameDataset(Dataset):
     def __len__(self) -> int:
         return len(self.image_files)
     
-    def __getitem__(self, idx):
-       
+    def __getitem__(self, idx):   
         img_path = self.image_files[idx]
         
         try:
@@ -178,8 +177,6 @@ class FrameEncoder:
                 del valid_tensors, batch_tensors, batch_metadata
                 
                 batch_count += 1
-                # Only cleanup memory every 10 batches to reduce overhead
-
             self.stats.frames_processed += frames_in_video
             return clip_entities, None
             
@@ -203,7 +200,7 @@ class FrameEncoder:
     #             if f.lower().endswith(img_ext)
     #         ]
     #         if image_files:
-    #             video_name = os.path.basename(root)  # e.g. "L21_V001"
+    #             video_name = os.path.basename(root)  
     #             video_folders[video_name] = image_files
     #     return video_folders
             
