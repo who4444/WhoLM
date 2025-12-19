@@ -59,6 +59,7 @@ class DocumentProcessor:
                     print(f"Failed to process image: {e}")
 
         return "\n\n".join(all_chunks)
+    
 
     def load_docx(self, path):
         doc = docx.Document(path)
