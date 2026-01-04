@@ -8,3 +8,7 @@ numpy
 rank-bm25
 FlagEmbedding
 qdrant-client
+imagehash
+open-clip-torch
+streamlit
+yt-dlp

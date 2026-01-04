@@ -4,8 +4,8 @@ from typing import List, Dict, Optional, Tuple
 import numpy as np
 from .hybrid_retriever import HybridRetriever
 from .reranker import reranker
-from ..embeddings.text_encoder import model as text_encoder_model
-from ...database.qdrant import QdrantDB
+from ingestion.embeddings.text_encoder import model as text_encoder_model
+from database.qdrant import QdrantDB
 
 logger = logging.getLogger(__name__)
 

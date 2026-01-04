@@ -2,8 +2,10 @@ import boto3
 import os
 import uuid
 import subprocess
+from config.config import Config
 
-s3_client = boto3.client('s3', region_name='us-east-1')
+AWS_REGION = Config.AWS_REGION
+s3_client = boto3.client('s3', region_name=AWS_REGION)
 
 def download_to_disk(bucket, s3_key):
     try:
@@ -43,7 +45,7 @@ def get_presigned_stream_url(bucket_name, s3_key):
     
 def stream_audio_from_s3(bucket_name, s3_key):
     """
-    Streams video from S3, extracts audio, and saves ONLY the audio locally.
+    Streams video from S3, extracts audio, and saves the audio locally.
     Returns the path to the local .mp3 file.
     """
     # Get the secure Stream URL

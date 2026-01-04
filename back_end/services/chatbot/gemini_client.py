@@ -36,4 +36,3 @@ def generate_response(sys_prompt, context, query):
 
 
 
-

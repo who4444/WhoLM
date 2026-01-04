@@ -4,13 +4,12 @@ import boto3
 import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-
+from config.config import Config
 app = FastAPI()
 
-S3_BUCKET = ""
-AWS_REGION = ""
-
-s3_client = boto3.client('s3', region_name = AWS_REGION)
+S3_BUCKET = Config.S3_BUCKET
+s3_client = boto3.client('s3', region_name = Config.AWS_REGION)
+logger = logging.getLogger(__name__)
 
 class UploadRequest(BaseModel):
     filename: str
@@ -19,7 +18,7 @@ class UploadRequest(BaseModel):
 @app.post("/api/get-upload-url")
 async def generate_upload_url(request: UploadRequest):
     try:
-        ext = os.path.splitext(request.file_name)[1].lower()
+        ext = os.path.splitext(request.filename)[1].lower()
         if not ext:
             raise HTTPException(status_code=400, detail="File extension missing")
             
@@ -41,5 +40,5 @@ async def generate_upload_url(request: UploadRequest):
         }
 
     except Exception as e:
-        print(f"Error: {e}")
+        logging.error(f"Error generating presigned URL: {e}")
         raise HTTPException(status_code=500, detail=str(e))

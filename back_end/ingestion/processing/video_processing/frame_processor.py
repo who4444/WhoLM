@@ -1,44 +1,52 @@
 import imagehash
 import subprocess
-from dataclasses import dataclass
-import torch
 from PIL import Image
 from pathlib import Path
 import os
 from tqdm import tqdm
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class FrameExtractor:
-    def __init__(self,
-                 device = 'cuda',
-                 output_dir = '',
-                 save_frames = True):
-        self.device = torch.device(device if torch.is_available() else 'cpu')
+    def __init__(self, output_dir = None):
+        if output_dir is None:
+            output_dir = "tmp"  # Default to tmp directory
         self.output_dir = Path(output_dir)
-        self.save_frames = save_frames
-        if save_frames and output_dir:
-            self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def extract_frames(self, video_path, output_dir):
-        """Extract I and P frames using ffmpeg 
-        Args: 
-        1. Video path
-        2. Output dir
+        """Extract 1 frame per second from the video using ffmpeg.
         """    
         video_path  = Path(video_path)
+        video_id = video_path.stem
+        output_dir = Path(output_dir) 
+
         if not video_path.exists():
-            raise FileNotFoundError(f"Video not found")
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        cmd = [
-            "ffmpeg", "-i", str(video_path),
-            "-vf", "select='eq(pict_type\\,I)+eq(pict_type\\,P)',showinfo",
-            "-vsync", "vfr", "-qscale:v", "2",
-            str(Path(output_dir) / "%04d.jpg")
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+        
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Extracting frames from {video_path} to {output_dir}")
+
+        cmd = ['ffmpeg', '-i', str(video_path),
+               '-vf', 'fps=1',
+               str(output_dir / f'{video_id}_frame_%05d.jpg')
         ]
 
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            logger.info(f"FFmpeg output: {result.stdout}")
+            
+            # Check if frames were actually created
+            frame_files = list(output_dir.glob("*.jpg"))
+            if not frame_files:
+                raise RuntimeError(f"FFmpeg completed but no frames found in {output_dir}")
+            
+            logger.info(f"Successfully extracted {len(frame_files)} frames")
             return output_dir
+            
         except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg stderr: {e.stderr}")
             raise RuntimeError(f"Frame extraction failed: {e.stderr}")
     
     def remove_dupes(self, output_dir, threshold=5, window=10, delete_files=True):
@@ -90,29 +98,35 @@ class FrameExtractor:
                 errors.append(f"Failed to process {fname}: {e}")
                 continue  # Skip this file on error
 
-            # compare with recent hashes
-            if not any(abs(h - prev) <= threshold for prev in last_hashes):
-                kept.append(fname)
-            else:
-                removed_count += 1
-                if delete_files:
-                    os.remove(path)
-        print(f"Removed {removed_count} near-duplicates, kept {len(kept)} frames.")
         if errors:
-            print("Warnings during processing:")
             for error in errors[:5]:  # Show first 5 errors
-                print(f"- {error}")
+                logger.error(f"- {error}")
             if len(errors) > 5:
-                print(f"...and {len(errors) - 5} more errors")
+                logger.error(f"...and {len(errors) - 5} more errors")
                 
         return kept
     
     def process_video(self, video_path, dedup_thr, dedup_window):
-        # Complete pipeline
 
-        video_name  = Path(video_path).stem
-        output_dir  = self.output_dir/video_name
+        video_path = Path(video_path)
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+
+        video_name  = video_path.stem
+        output_dir  = self.output_dir / video_name
+
+        # Extract frames
         self.extract_frames(video_path, output_dir)
+
+        # Check if frames were created
+        frame_files = list(output_dir.glob("*.jpg"))
+        if not frame_files:
+            raise RuntimeError(f"No frames were extracted to {output_dir}")
+
+        logger.info(f"Extracted {len(frame_files)} frames")
+
+        # Remove duplicates
         kept_frames = self.remove_dupes(output_dir, dedup_thr, dedup_window)
+
         return kept_frames
     
