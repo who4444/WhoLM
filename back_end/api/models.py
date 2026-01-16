@@ -23,7 +23,7 @@ class UploadResponse(BaseModel):
     error: Optional[str] = None
 
 
-class S3UploadRequest(BaseModel):
+class SupabaseUploadRequest(BaseModel):
     filename: str
     content_type: str
 

@@ -1,6 +1,4 @@
-"""
-Vector ingestion module for pushing embeddings to Qdrant with modality-specific collections.
-"""
+
 import logging
 from typing import List, Dict, Optional, Union, Tuple
 import numpy as np
@@ -32,14 +30,14 @@ class VectorIngester:
         # Initialize collection managers for different modalities
         self.text_collection = QdrantDB(
             url=self.qdrant_url,
-            vector_collection="text_documents",
-            vector_dim=1024  # BGE-M3 dimension
+            vector_collection=Config.QDRANT_DOC_COLLECTION,
+            vector_dim=1024  # BGE-M3 
         )
 
         self.frame_collection = QdrantDB(
             url=self.qdrant_url,
-            vector_collection="frame_embeddings",
-            vector_dim=512  # CLIP dimension
+            vector_collection=Config.QDRANT_VD_COLLECTION,
+            vector_dim=512  # CLIP 
         )
 
         logger.info("VectorIngester initialized with collections: text_documents, frame_embeddings")
@@ -60,7 +58,6 @@ class VectorIngester:
         if len(texts) != len(embeddings):
             raise ValueError("texts and embeddings must have same length")
 
-
         logger.info(f"Pushing {len(texts)} text embeddings to Qdrant")
 
         # Prepare payloads
@@ -68,8 +65,8 @@ class VectorIngester:
         for i, text in enumerate(texts):
             payload = {
                 "modality": "text",
+                "type": "documents",
                 "text": text,
-                "text_length": len(text),
                 "doc_id": self._generate_doc_id(text, f"text_{i}"),
                 "chunk_index": i
             }
@@ -110,10 +107,10 @@ class VectorIngester:
             frame_info = self._parse_frame_path(frame_path)
 
             payload = {
-                "modality": "frame",
+                "modality": "visual",
                 "frame_path": str(frame_path),
                 "frame_filename": frame_path.name,
-                "video_name": frame_info["video_name"],
+                "video_id": frame_info["video_id"],
                 "frame_num": frame_info["frame_num"],
                 "timestamp": frame_info["timestamp"],
                 "doc_id": self._generate_doc_id(str(frame_path), f"frame_{i}")
@@ -195,7 +192,6 @@ class VectorIngester:
             payload = {
                 "modality": "text",
                 "type": "document",
-                "doc_id": doc_id,
                 "text": chunk,
                 "text_length": len(chunk),
                 "chunk_index": i,

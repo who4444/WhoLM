@@ -10,7 +10,7 @@ from services.chatbot.gemini_client import generate_response
 from services.chatbot.prompts.document_prompts import doc_prompt
 from services.rag.qdrant_rag_pipeline import QdrantRAGPipeline
 from typing import Optional, Dict, Any
-
+from config.config import Config
 
 class WhoLM:
     """
@@ -42,7 +42,13 @@ class WhoLM:
         )
 
         # Initialize RAG pipeline
-        self.rag_pipeline = QdrantRAGPipeline()
+        self.rag_pipeline = QdrantRAGPipeline(
+            qdrant_url=qdrant_url,
+            text_collection=Config.QDRANT_DOC_COLLECTION,
+            frame_collection=Config.QDRANT_VD_COLLECTION,
+            embedding_dim=Config.QDRANT_TEXT_EMBEDDING_DIM,
+            frame_embedding_dim=Config.QDRANT_IMAGE_EMBEDDING_DIM
+        )
 
         # System prompts 
         self.system_prompts = {
@@ -126,10 +132,18 @@ class WhoLM:
 
             # Format context from RAG results
             if rag_results:
-                context_str = "\n\n".join([
-                    f"[Source {i+1}] {result.get('content', '')}"
-                    for i, result in enumerate(rag_results[:5])  # Top 5 results
-                ])
+                context_parts = []
+                for i, result in enumerate(rag_results[:5]):  # Top 5 results
+                    modality = result.get("metadata", {}).get("modality", "text")
+                    if modality == "frame":
+                        # Handle frame results
+                        frame_info = f"Frame from video '{result.get('metadata', {}).get('video_name', 'unknown')}' at {result.get('metadata', {}).get('timestamp', 0)}s"
+                        context_parts.append(f"[Source {i+1}] {frame_info}")
+                    else:
+                        # Handle text results
+                        text_content = result.get('text', '')
+                        context_parts.append(f"[Source {i+1}] {text_content}")
+                context_str = "\n\n".join(context_parts)
             else:
                 context_str = "No relevant content found in the database."
 

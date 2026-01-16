@@ -2,3 +2,4 @@ venv
 tests
 __pycache__
 .env
+POSTGRES_SETUP.md

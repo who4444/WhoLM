@@ -12,3 +12,17 @@ imagehash
 open-clip-torch
 streamlit
 yt-dlp
+supabase
+uvicorn
+pydantic
+python-dotenv
+stable-whisper
+PyMuPDF
+python-docx
+langchain-text-splitters
+aiofiles
+python-multipart
+psycopg2-binary
+llama-index-core
+llama-index-llms-gemini
+google-generativeai

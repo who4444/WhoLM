@@ -17,8 +17,10 @@ class QdrantRAGPipeline:
     """
     
     def __init__(self, qdrant_url: str = "http://localhost:6333",
-                 collection_name: str = "documents",
+                 text_collection: str = "text_documents",
+                 frame_collection: str = "frame_embeddings",
                  embedding_dim: int = 1024,
+                 frame_embedding_dim: int = 512,
                  bm25_weight: float = 0.5,
                  dense_weight: float = 0.5,
                  reranker_top_k: int = 3):
@@ -27,24 +29,33 @@ class QdrantRAGPipeline:
         
         Args:
             qdrant_url: Qdrant server URL
-            collection_name: Name of vector collection
-            embedding_dim: Dimension of embeddings (1024 for BGE-M3)
+            text_collection: Name of text vector collection
+            frame_collection: Name of frame vector collection
+            embedding_dim: Dimension of text embeddings (1024 for BGE-M3)
+            frame_embedding_dim: Dimension of frame embeddings (512 for CLIP)
             bm25_weight: Weight for BM25 in hybrid retriever
             dense_weight: Weight for dense embeddings
             reranker_top_k: Number of results after reranking
         """
-        self.qdrant_db = QdrantDB(
+        self.text_db = QdrantDB(
             url=qdrant_url,
-            vector_collection=collection_name,
+            vector_collection=text_collection,
             vector_dim=embedding_dim
+        )
+        self.frame_db = QdrantDB(
+            url=qdrant_url,
+            vector_collection=frame_collection,
+            vector_dim=frame_embedding_dim
         )
         self.hybrid_retriever = HybridRetriever(
             bm25_weight=bm25_weight,
             dense_weight=dense_weight
         )
         self.reranker_top_k = reranker_top_k
-        self.collection_name = collection_name
+        self.text_collection = text_collection
+        self.frame_collection = frame_collection
         self.embedding_dim = embedding_dim
+        self.frame_embedding_dim = frame_embedding_dim
         self.next_point_id = 0
     
     def add_transcripts(self, documents: List[str], doc_ids: List[str],
@@ -96,7 +107,7 @@ class QdrantRAGPipeline:
             ]
             
             # Store in Qdrant
-            success = self.qdrant_db.upsert(point_ids, embeddings, payloads)
+            success = self.text_db.upsert(point_ids, embeddings, payloads)
             
             if success:
                 # Update hybrid retriever's BM25 index
@@ -147,8 +158,14 @@ class QdrantRAGPipeline:
             return_sparse=False
         )[0]
         
-        # Retrieve from Qdrant
-        qdrant_results = self.qdrant_db.search(query_embedding, limit=retriever_top_k)
+        # Retrieve from both text and frame collections
+        text_results = self.text_db.search(query_embedding, limit=retriever_top_k // 2)
+        frame_results = self.frame_db.search(query_embedding, limit=retriever_top_k // 2)
+        
+        # Combine and sort results
+        all_results = text_results + frame_results
+        all_results.sort(key=lambda x: x["score"], reverse=True)
+        qdrant_results = all_results[:retriever_top_k]
         
         if not qdrant_results:
             logger.warning("No results from Qdrant")
@@ -195,8 +212,8 @@ class QdrantRAGPipeline:
             return_sparse=False
         )[0]
         
-        # Dense retrieval from Qdrant
-        qdrant_results = self.qdrant_db.search(query_embedding, limit=retriever_top_k * 2)
+        # Dense retrieval from Qdrant (text collection only for hybrid)
+        qdrant_results = self.text_db.search(query_embedding, limit=retriever_top_k * 2)
         dense_doc_ids = [r["payload"]["doc_id"] for r in qdrant_results]
         
         # BM25 retrieval from memory index
@@ -305,11 +322,15 @@ class QdrantRAGPipeline:
         Returns:
             Dict with system statistics
         """
-        collection_info = self.qdrant_db.get_collection_info()
+        text_info = self.text_db.get_collection_info()
+        frame_info = self.frame_db.get_collection_info()
         return {
-            "collection": self.collection_name,
-            "total_documents": collection_info["points_count"] if collection_info else 0,
-            "embedding_dim": self.embedding_dim,
+            "text_collection": self.text_collection,
+            "frame_collection": self.frame_collection,
+            "total_text_documents": text_info["points_count"] if text_info else 0,
+            "total_frame_documents": frame_info["points_count"] if frame_info else 0,
+            "text_embedding_dim": self.embedding_dim,
+            "frame_embedding_dim": self.frame_embedding_dim,
             "bm25_documents": len(self.hybrid_retriever.bm25_index.doc_ids),
             "reranker_top_k": self.reranker_top_k,
             "bm25_weight": self.hybrid_retriever.bm25_weight,

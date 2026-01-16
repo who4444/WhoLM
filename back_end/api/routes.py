@@ -7,11 +7,11 @@ from pathlib import Path
 from datetime import datetime
 import tempfile
 import shutil
-import boto3
+from supabase import create_client, Client
 
 from fastapi import APIRouter, File, UploadFile, HTTPException, Form, BackgroundTasks
 
-from .models import ChatRequest, ChatResponse, UploadResponse, YouTubeUploadRequest, S3UploadRequest, ProcessRequest
+from .models import ChatRequest, ChatResponse, UploadResponse, YouTubeUploadRequest, SupabaseUploadRequest, ProcessRequest
 from services.chatbot.chatbot_with_memory import WhoLM
 from ingestion.processing_functions import process_video_upload, process_document_upload
 from config.config import Config
@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 chatbot = WhoLM(qdrant_url=Config.QDRANT_URL)
 
-# Initialize S3 client
-s3_client = boto3.client('s3', region_name=Config.AWS_REGION)
+# Initialize Supabase client
+supabase: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
 
 # In-memory storage for uploaded content (in production, use a database)
 uploaded_content = []
@@ -34,8 +34,8 @@ async def root():
 
 
 @router.post("/upload/get-url")
-async def get_upload_url(request: S3UploadRequest):
-    """Generate presigned URL for S3 upload"""
+async def get_upload_url(request: SupabaseUploadRequest):
+    """Generate presigned URL for Supabase upload"""
     try:
         # Validate file type based on content type
         allowed_video_types = {"video/mp4", "video/avi", "video/quicktime", "video/x-msvideo", "video/webm"}
@@ -59,15 +59,10 @@ async def get_upload_url(request: S3UploadRequest):
         object_key = f"uploads/{uuid.uuid4()}{ext}"
         content_id = str(uuid.uuid4())
 
-        # Generate presigned URL
-        presigned_url = s3_client.generate_presigned_url(
-            'put_object',
-            Params={
-                'Bucket': Config.S3_BUCKET,
-                'Key': object_key,
-                'ContentType': request.content_type
-            },
-            ExpiresIn=300  
+        # Generate signed URL for upload
+        signed_url = supabase.storage.from_(Config.SUPABASE_BUCKET_NAME).create_signed_url(
+            object_key,
+            900  # URL expires in 1 hour
         )
 
         # Store upload metadata
@@ -75,17 +70,17 @@ async def get_upload_url(request: S3UploadRequest):
             "content_id": content_id,
             "filename": request.filename,
             "content_type": content_type,
-            "s3_key": object_key,
+            "storage_path": object_key,
             "upload_time": datetime.now().isoformat(),
             "status": "pending_upload"
         }
         uploaded_content.append(upload_metadata)
 
         return {
-            "upload_url": presigned_url,
-            "s3_key": object_key,
+            "upload_url": signed_url["signedURL"],
+            "storage_path": object_key,
             "content_id": content_id,
-            "expires_in": 300
+            "expires_in": 900
         }
 
     except Exception as e:
@@ -95,7 +90,7 @@ async def get_upload_url(request: S3UploadRequest):
 
 @router.post("/upload/process", response_model=UploadResponse)
 async def process_uploaded_file(request: ProcessRequest, background_tasks: BackgroundTasks):
-    """Process a file that has been uploaded to S3"""
+    """Process a file that has been uploaded to Supabase"""
     try:
         # Find the upload metadata
         upload_metadata = None
@@ -116,16 +111,16 @@ async def process_uploaded_file(request: ProcessRequest, background_tasks: Backg
             "id": request.content_id,
             "name": request.name,
             "type": upload_metadata["content_type"],
-            "s3_key": upload_metadata["s3_key"],
+            "storage_path": upload_metadata["storage_path"],
             "upload_time": upload_metadata["upload_time"],
             "status": "processing"
         }
 
         # Process in background
         if upload_metadata["content_type"] == "video":
-            background_tasks.add_task(process_s3_video_background, request.content_id, upload_metadata["s3_key"], request.name)
+            background_tasks.add_task(process_supabase_video_background, request.content_id, upload_metadata["storage_path"], request.name)
         else:
-            background_tasks.add_task(process_s3_document_background, request.content_id, upload_metadata["s3_key"], request.name)
+            background_tasks.add_task(process_supabase_document_background, request.content_id, upload_metadata["storage_path"], request.name)
 
         return UploadResponse(
             success=True,
@@ -252,11 +247,11 @@ async def delete_content(content_id: str):
 
 
 # Background processing functions
-def process_s3_video_background(content_id: str, s3_key: str, video_name: str):
-    """Process video from S3 in background"""
+def process_supabase_video_background(content_id: str, storage_path: str, video_name: str):
+    """Process video from Supabase in background"""
     temp_path = None
     try:
-        logger.info(f"Starting background processing for S3 video: {video_name}")
+        logger.info(f"Starting background processing for Supabase video: {video_name}")
 
         # Update status
         for content in uploaded_content:
@@ -264,9 +259,14 @@ def process_s3_video_background(content_id: str, s3_key: str, video_name: str):
                 content["status"] = "downloading"
                 break
 
-        # Download file from S3 to temporary location
-        temp_path = tempfile.mkstemp(suffix=Path(s3_key).suffix)
-        s3_client.download_file(Config.S3_BUCKET, s3_key, temp_path)
+        # Download file from Supabase to temporary location
+        temp_file = tempfile.NamedTemporaryFile(suffix=Path(storage_path).suffix, delete=False)
+        temp_path = temp_file.name
+        temp_file.close()
+        
+        response = supabase.storage.from_(Config.SUPABASE_BUCKET_NAME).download(storage_path)
+        with open(temp_path, 'wb') as f:
+            f.write(response)
 
         # Update status
         for content in uploaded_content:
@@ -288,7 +288,7 @@ def process_s3_video_background(content_id: str, s3_key: str, video_name: str):
                     content["error"] = result.get("error", "Unknown error")
                 break
 
-        logger.info(f"Completed background processing for S3 video: {video_name}")
+        logger.info(f"Completed background processing for Supabase video: {video_name}")
 
     except Exception as e:
         logger.error(f"Error in background S3 video processing: {str(e)}")
@@ -304,11 +304,11 @@ def process_s3_video_background(content_id: str, s3_key: str, video_name: str):
             os.unlink(temp_path)
 
 
-def process_s3_document_background(content_id: str, s3_key: str, doc_name: str):
-    """Process document from S3 in background"""
+def process_supabase_document_background(content_id: str, storage_path: str, doc_name: str):
+    """Process document from Supabase in background"""
     temp_path = None
     try:
-        logger.info(f"Starting background processing for S3 document: {doc_name}")
+        logger.info(f"Starting background processing for Supabase document: {doc_name}")
 
         # Update status
         for content in uploaded_content:
@@ -316,9 +316,14 @@ def process_s3_document_background(content_id: str, s3_key: str, doc_name: str):
                 content["status"] = "downloading"
                 break
 
-        # Download file from S3 to temporary location
-        temp_path = tempfile.mkstemp(suffix=Path(s3_key).suffix)
-        s3_client.download_file(Config.S3_BUCKET, s3_key, temp_path)
+        # Download file from Supabase to temporary location
+        temp_file = tempfile.NamedTemporaryFile(suffix=Path(storage_path).suffix, delete=False)
+        temp_path = temp_file.name
+        temp_file.close()
+        
+        response = supabase.storage.from_(Config.SUPABASE_BUCKET_NAME).download(storage_path)
+        with open(temp_path, 'wb') as f:
+            f.write(response)
 
         # Update status
         for content in uploaded_content:
@@ -340,10 +345,10 @@ def process_s3_document_background(content_id: str, s3_key: str, doc_name: str):
                     content["error"] = result.get("error", "Unknown error")
                 break
 
-        logger.info(f"Completed background processing for S3 document: {doc_name}")
+        logger.info(f"Completed background processing for Supabase document: {doc_name}")
 
     except Exception as e:
-        logger.error(f"Error in background S3 document processing: {str(e)}")
+        logger.error(f"Error in background Supabase document processing: {str(e)}")
         # Update status to failed
         for content in uploaded_content:
             if content["id"] == content_id:

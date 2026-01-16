@@ -10,6 +10,7 @@ from ingestion.processing.video_processing.frame_processor import FrameExtractor
 from ingestion.processing.document_processing.document_processor import DocumentProcessor
 from ingestion.embeddings.text_encoder import encode_texts
 from ingestion.embeddings.frame_encoder import FrameEncoder
+from services.rag.qdrant_rag_pipeline import QdrantRAGPipeline
 from config.config import Config
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,10 @@ def process_video_upload(file_path: str, video_name: str) -> Dict[str, Any]:
 
         # Initialize processing components
         ingester = VectorIngester()
+        rag_pipeline = QdrantRAGPipeline(
+            text_collection=Config.QDRANT_DOC_COLLECTION,
+            frame_collection=Config.QDRANT_VD_COLLECTION
+        )
         audio_processor = AudioProcessor()
         frame_extractor = FrameExtractor()
         frame_encoder = FrameEncoder()
@@ -51,10 +56,11 @@ def process_video_upload(file_path: str, video_name: str) -> Dict[str, Any]:
         # Text embeddings for transcript
         if transcript_result:
             transcript_texts = [chunk["text"] for chunk in transcript_result]
-            transcript_embeddings = encode_texts(transcript_texts)
-
-            # Store transcript embeddings
-            ingester.push_video_transcript(video_name, transcript_result, transcript_embeddings)
+            
+            # Add to RAG pipeline (includes embedding generation and storage)
+            doc_ids = [f"{video_name}_transcript_{i}" for i in range(len(transcript_texts))]
+            metadata = [{"video_id": video_name, "chunk_index": i, "type": "transcript", "modality": "text"} for i in range(len(transcript_texts))]
+            rag_pipeline.add_transcripts(transcript_texts, doc_ids, metadata)
         # Frame embeddings
         if frames_result:
             frame_embeddings = frame_encoder.process_single_video(frames_result)
@@ -90,8 +96,11 @@ def process_document_upload(file_path: str, doc_name: str) -> Dict[str, Any]:
     try:
         logger.info(f"Processing document: {doc_name}")
 
-        # Initialize vector ingester
-        ingester = VectorIngester()
+        # Initialize components
+        rag_pipeline = QdrantRAGPipeline(
+            text_collection=Config.QDRANT_DOC_COLLECTION,
+            frame_collection=Config.QDRANT_VD_COLLECTION
+        )
         doc_processor = DocumentProcessor()
 
         # Step 1: Process document and extract text
@@ -106,12 +115,13 @@ def process_document_upload(file_path: str, doc_name: str) -> Dict[str, Any]:
         if not text_chunks:
             return {"success": False, "error": "No text content found in document"}
 
-        # Step 2: Generate embeddings
-        logger.info("Generating text embeddings...")
-        embeddings = encode_texts(text_chunks)
-
-        # Step 3: Store in vector database
-        ingester.push_document_embeddings(doc_name, text_chunks, embeddings)
+        # Step 2: Generate embeddings and store
+        logger.info("Generating text embeddings and storing...")
+        
+        # Add to RAG pipeline (includes embedding generation and storage)
+        doc_ids = [f"{doc_name}_chunk_{i}" for i in range(len(text_chunks))]
+        metadata = [{"doc_id": doc_name, "chunk_index": i, "type": "document", "modality": "text"} for i in range(len(text_chunks))]
+        rag_pipeline.add_transcripts(text_chunks, doc_ids, metadata)
 
         logger.info(f"Successfully processed document: {doc_name}")
 

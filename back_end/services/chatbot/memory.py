@@ -12,6 +12,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 
 from database.qdrant import QdrantDB
+from database.postgres import PostgresDB
 from ingestion.embeddings.text_encoder import encode_texts
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,7 @@ class ConversationMemory:
         Initialize conversation memory.
 
         Args:
-            qdrant_url: Qdrant server URL
+            qdrant_url: Qdrant server URL (kept for compatibility)
             short_term_limit: Max messages to keep in short-term memory
             max_session_age_days: Days before old sessions are cleaned up
             embedding_dim: Dimension of text embeddings
@@ -92,7 +93,10 @@ class ConversationMemory:
         self.max_session_age_days = max_session_age_days
         self.embedding_dim = embedding_dim
 
-        # Initialize Qdrant collections for different memory types
+        # Initialize PostgreSQL database for memory storage
+        self.db = PostgresDB()
+
+        # Keep Qdrant for other vector operations if needed
         self.conversations_db = QdrantDB(
             url=qdrant_url,
             vector_collection="conversations",
@@ -114,7 +118,7 @@ class ConversationMemory:
         # Message ID counter
         self.message_counter = 0
 
-        logger.info("Conversation memory initialized")
+        logger.info("Conversation memory initialized with PostgreSQL storage")
 
     def start_session(self, session_id: str, user_id: Optional[str] = None,
                      initial_context: Dict[str, Any] = None) -> ConversationContext:
@@ -220,12 +224,23 @@ class ConversationMemory:
         Returns:
             List of messages from the time period
         """
-        # Query Qdrant for messages from this session within time range
-        cutoff_time = datetime.now() - timedelta(hours=hours_back)
+        # Query PostgreSQL for messages from this session within time range
+        messages_data = self.db.get_messages_by_session(session_id, limit=1000)
 
-        # For now, return short-term memory (Qdrant query would be more complex)
-        # In a full implementation, you'd query Qdrant with filters
-        return self.get_recent_messages(session_id, limit=100)
+        # Convert to Message objects
+        messages = []
+        for data in messages_data:
+            message = Message.from_dict(data)
+            messages.append(message)
+
+        # Filter by time if needed
+        cutoff_time = datetime.now() - timedelta(hours=hours_back)
+        messages = [msg for msg in messages if msg.timestamp >= cutoff_time]
+
+        # Sort by timestamp
+        messages.sort(key=lambda x: x.timestamp)
+
+        return messages
 
     def search_similar_conversations(self, query: str, limit: int = 5) -> List[Dict]:
         """
@@ -241,20 +256,19 @@ class ConversationMemory:
         # Encode query
         query_embedding = encode_texts([query])[0]
 
-        # Search conversations collection
-        results = self.conversations_db.search(query_embedding, limit=limit)
+        # Search messages in PostgreSQL using vector similarity
+        results = self.db.search_similar_messages(query_embedding, limit=limit)
 
         # Format results
         formatted_results = []
         for result in results:
-            payload = result["payload"]
             formatted_results.append({
-                "session_id": payload.get("session_id"),
-                "message_id": payload.get("message_id"),
-                "content": payload.get("content"),
-                "role": payload.get("role"),
-                "timestamp": payload.get("timestamp"),
-                "score": result["score"]
+                "session_id": result["session_id"],
+                "message_id": result["message_id"],
+                "content": result["content"],
+                "role": result["role"],
+                "timestamp": result["timestamp"],
+                "score": result["similarity"]
             })
 
         return formatted_results
@@ -269,7 +283,26 @@ class ConversationMemory:
         Returns:
             ConversationContext or None if not found
         """
-        return self.active_contexts.get(session_id)
+        # Check active contexts first
+        if session_id in self.active_contexts:
+            return self.active_contexts[session_id]
+
+        # Query PostgreSQL for context
+        context_data = self.db.get_context(session_id)
+        if context_data:
+            context = ConversationContext(
+                session_id=context_data["session_id"],
+                user_id=context_data["user_id"],
+                topic=context_data["topic"],
+                last_activity=context_data["last_activity"],
+                preferences=context_data["preferences"] or {},
+                custom_data=context_data["custom_data"] or {}
+            )
+            # Cache in active contexts
+            self.active_contexts[session_id] = context
+            return context
+
+        return None
 
     def update_context(self, session_id: str, updates: Dict[str, Any]) -> None:
         """
@@ -324,18 +357,22 @@ class ConversationMemory:
         Returns:
             Number of sessions cleaned up
         """
-        cutoff_date = datetime.now() - timedelta(days=self.max_session_age_days)
-        cleaned_count = 0
+        # Clean up in PostgreSQL
+        cleaned_count = self.db.cleanup_old_sessions(self.max_session_age_days)
 
-        # Clean up active contexts
+        # Also clean up active contexts in memory
+        cutoff_date = datetime.now() - timedelta(days=self.max_session_age_days)
         to_remove = []
         for session_id, context in self.active_contexts.items():
             if context.last_activity < cutoff_date:
                 to_remove.append(session_id)
 
         for session_id in to_remove:
-            self.end_session(session_id)
-            cleaned_count += 1
+            if session_id in self.short_term_memory:
+                del self.short_term_memory[session_id]
+            del self.active_contexts[session_id]
+
+        cleaned_count += len(to_remove)
 
         if cleaned_count > 0:
             logger.info(f"Cleaned up {cleaned_count} old sessions")
@@ -356,27 +393,32 @@ class ConversationMemory:
             "short_term_messages": total_messages,
             "max_session_age_days": self.max_session_age_days,
             "short_term_limit": self.short_term_limit,
-            "qdrant_url": self.qdrant_url
+            "storage_backend": "PostgreSQL",
+            "qdrant_url": self.qdrant_url  # Kept for compatibility
         }
 
     def _store_message(self, message: Message) -> None:
-        """Store a message in Qdrant."""
+        """Store a message in PostgreSQL."""
         try:
             # Create embedding for the message
             embedding = encode_texts([message.content])[0]
 
-            # Prepare payload
-            payload = message.to_dict()
-
-            # Store in Qdrant
-            point_id = hash(f"{message.session_id}_{message.message_id}") % 2**63
-            self.conversations_db.upsert([point_id], [embedding], [payload])
+            # Store in PostgreSQL
+            self.db.insert_message(
+                message_id=message.message_id,
+                session_id=message.session_id,
+                role=message.role,
+                content=message.content,
+                timestamp=message.timestamp,
+                metadata=message.metadata,
+                embedding=embedding
+            )
 
         except Exception as e:
-            logger.error(f"Failed to store message in Qdrant: {e}")
+            logger.error(f"Failed to store message in PostgreSQL: {e}")
 
     def _store_context(self, context: ConversationContext) -> None:
-        """Store conversation context in Qdrant."""
+        """Store conversation context in PostgreSQL."""
         try:
             # Create a text representation for embedding
             context_text = f"Session {context.session_id} topic: {context.topic or 'general'}"
@@ -385,22 +427,19 @@ class ConversationMemory:
 
             embedding = encode_texts([context_text])[0]
 
-            # Prepare payload
-            payload = {
-                "session_id": context.session_id,
-                "user_id": context.user_id,
-                "topic": context.topic,
-                "last_activity": context.last_activity.isoformat(),
-                "preferences": json.dumps(context.preferences),
-                "custom_data": json.dumps(context.custom_data)
-            }
-
-            # Store in Qdrant
-            point_id = hash(context.session_id) % 2**63
-            self.contexts_db.upsert([point_id], [embedding], [payload])
+            # Store in PostgreSQL
+            self.db.insert_context(
+                session_id=context.session_id,
+                user_id=context.user_id,
+                topic=context.topic,
+                last_activity=context.last_activity,
+                preferences=context.preferences,
+                custom_data=context.custom_data,
+                embedding=embedding
+            )
 
         except Exception as e:
-            logger.error(f"Failed to store context in Qdrant: {e}")
+            logger.error(f"Failed to store context in PostgreSQL: {e}")
 
     def export_conversation(self, session_id: str, filepath: str) -> bool:
         """
@@ -432,3 +471,11 @@ class ConversationMemory:
         except Exception as e:
             logger.error(f"Failed to export conversation: {e}")
             return False
+
+    def close(self) -> None:
+        """
+        Close database connections and clean up resources.
+        """
+        if hasattr(self, 'db'):
+            self.db.close()
+        logger.info("Conversation memory system closed")
