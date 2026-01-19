@@ -87,7 +87,7 @@ class WhoLM:
         return context
 
     def chat(self, session_id: str, user_input: str,
-             content_type: str = "general") -> str:
+             content_type: str = "general") -> dict:
         """
         Process a chat message with memory context.
 
@@ -165,8 +165,10 @@ class WhoLM:
         # Add assistant response to memory
         self.memory.add_message(session_id, "assistant", response)
 
-        return response
-
+        return {
+            "answer": response,
+            "sources": rag_results if rag_results else []
+        }
     def get_conversation_history(self, session_id: str, limit: int = 20) -> list:
         """
         Get conversation history for a session.
@@ -243,49 +245,3 @@ class WhoLM:
         """
         return self.memory.export_conversation(session_id, filepath)
 
-
-# Example usage
-if __name__ == "__main__":
-    # Initialize chatbot
-    chatbot = WhoLM()
-
-    # Start a conversation
-    session_id = "example_session_001"
-    chatbot.start_conversation(session_id, user_id="user123")
-
-    # Example conversation
-    print("=== WhoLM Chatbot with Memory ===\n")
-
-    # First message
-    user_msg = "Hello! Can you help me find videos about machine learning?"
-    print(f"User: {user_msg}")
-    response = chatbot.chat(session_id, user_msg, content_type="video")
-    print(f"Assistant: {response}\n")
-
-    # Follow-up message
-    user_msg = "What about specifically neural networks?"
-    print(f"User: {user_msg}")
-    response = chatbot.chat(session_id, user_msg, content_type="video")
-    print(f"Assistant: {response}\n")
-
-    # Get conversation history
-    history = chatbot.get_conversation_history(session_id)
-    print(f"Conversation has {len(history)} messages\n")
-
-    # Search for similar conversations
-    similar = chatbot.search_similar_conversations("machine learning videos")
-    print(f"Found {len(similar)} similar conversations\n")
-
-    # Update preferences
-    chatbot.update_user_preferences(session_id, {
-        "topic": "machine learning",
-        "difficulty_level": "beginner"
-    })
-
-    # Export conversation
-    chatbot.export_conversation(session_id, "example_conversation.json")
-
-    # End conversation
-    chatbot.end_conversation(session_id)
-
-    print("Conversation ended and exported.")

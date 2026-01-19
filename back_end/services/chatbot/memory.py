@@ -401,7 +401,7 @@ class ConversationMemory:
         """Store a message in PostgreSQL."""
         try:
             # Create embedding for the message
-            embedding = encode_texts([message.content])[0]
+            embedding = encode_texts([message.content])[0].tolist()
 
             # Store in PostgreSQL
             self.db.insert_message(

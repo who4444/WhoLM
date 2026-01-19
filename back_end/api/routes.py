@@ -60,9 +60,8 @@ async def get_upload_url(request: SupabaseUploadRequest):
         content_id = str(uuid.uuid4())
 
         # Generate signed URL for upload
-        signed_url = supabase.storage.from_(Config.SUPABASE_BUCKET_NAME).create_signed_url(
-            object_key,
-            900  # URL expires in 1 hour
+        signed_url = supabase.storage.from_(Config.SUPABASE_BUCKET_NAME).create_signed_upload_url(
+            object_key  
         )
 
         # Store upload metadata
@@ -77,7 +76,7 @@ async def get_upload_url(request: SupabaseUploadRequest):
         uploaded_content.append(upload_metadata)
 
         return {
-            "upload_url": signed_url["signedURL"],
+            "upload_url": signed_url["signedUrl"],
             "storage_path": object_key,
             "content_id": content_id,
             "expires_in": 900
@@ -178,7 +177,7 @@ async def chat(request: ChatRequest):
         session_id = request.session_id or str(uuid.uuid4())
 
         # Ask the chatbot
-        response = chatbot.ask_question(request.question, session_id=session_id)
+        response = chatbot.chat(session_id=session_id, user_input=request.question)
 
         return ChatResponse(
             success=True,
@@ -224,7 +223,7 @@ async def delete_content(content_id: str):
         content_to_delete = None
 
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 content_to_delete = content
                 break
 
@@ -255,7 +254,7 @@ def process_supabase_video_background(content_id: str, storage_path: str, video_
 
         # Update status
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 content["status"] = "downloading"
                 break
 
@@ -270,7 +269,7 @@ def process_supabase_video_background(content_id: str, storage_path: str, video_
 
         # Update status
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 content["status"] = "processing"
                 break
 
@@ -279,7 +278,7 @@ def process_supabase_video_background(content_id: str, storage_path: str, video_
 
         # Update status
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 if result.get("success"):
                     content["status"] = "completed"
                     content["processing_result"] = result
@@ -294,7 +293,7 @@ def process_supabase_video_background(content_id: str, storage_path: str, video_
         logger.error(f"Error in background S3 video processing: {str(e)}")
         # Update status to failed
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 content["status"] = "failed"
                 content["error"] = str(e)
                 break
@@ -306,20 +305,19 @@ def process_supabase_video_background(content_id: str, storage_path: str, video_
 
 def process_supabase_document_background(content_id: str, storage_path: str, doc_name: str):
     """Process document from Supabase in background"""
-    temp_path = None
     try:
         logger.info(f"Starting background processing for Supabase document: {doc_name}")
 
         # Update status
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 content["status"] = "downloading"
                 break
 
         # Download file from Supabase to temporary location
-        temp_file = tempfile.NamedTemporaryFile(suffix=Path(storage_path).suffix, delete=False)
-        temp_path = temp_file.name
-        temp_file.close()
+        tmp_dir = Config.TEMP_DIR
+        os.makedirs(tmp_dir, exist_ok=True)
+        temp_path = os.path.join(tmp_dir, f"{uuid.uuid4()}{Path(storage_path).suffix}")
         
         response = supabase.storage.from_(Config.SUPABASE_BUCKET_NAME).download(storage_path)
         with open(temp_path, 'wb') as f:
@@ -327,7 +325,7 @@ def process_supabase_document_background(content_id: str, storage_path: str, doc
 
         # Update status
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 content["status"] = "processing"
                 break
 
@@ -336,7 +334,7 @@ def process_supabase_document_background(content_id: str, storage_path: str, doc
 
         # Update status
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 if result.get("success"):
                     content["status"] = "completed"
                     content["processing_result"] = result
@@ -351,7 +349,7 @@ def process_supabase_document_background(content_id: str, storage_path: str, doc
         logger.error(f"Error in background Supabase document processing: {str(e)}")
         # Update status to failed
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 content["status"] = "failed"
                 content["error"] = str(e)
                 break
@@ -368,7 +366,7 @@ def process_youtube_video_background(content_id: str, youtube_url: str):
 
         # Update status
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 content["status"] = "downloading"
                 break
 
@@ -400,7 +398,7 @@ def process_youtube_video_background(content_id: str, youtube_url: str):
 
         # Update status
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 content["status"] = "processing"
                 content["file_path"] = video_path
                 break
@@ -410,7 +408,7 @@ def process_youtube_video_background(content_id: str, youtube_url: str):
 
         # Update status
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 if result.get("success"):
                     content["status"] = "completed"
                     content["processing_result"] = result
@@ -428,7 +426,7 @@ def process_youtube_video_background(content_id: str, youtube_url: str):
         logger.error(f"Error in background YouTube video processing: {str(e)}")
         # Update status to failed
         for content in uploaded_content:
-            if content["id"] == content_id:
+            if content["content_id"] == content_id:
                 content["status"] = "failed"
                 content["error"] = str(e)
                 break

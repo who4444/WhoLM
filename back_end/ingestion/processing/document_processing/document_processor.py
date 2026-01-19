@@ -11,12 +11,14 @@ class DocumentProcessor:
         
         # If no text was extracted, return empty list
         if not raw_text:
-            return []
+            return {"text_chunks": [],
+                    "success": False}
 
         # Apply the splitter to the extracted text
         # split_text returns a list of strings
         chunks = self.splitter.split_text(raw_text)
-        return chunks
+        return {"text_chunks": chunks,
+                "success": True}
 
     def file_router(self, path):
         if path.endswith('.pdf'):

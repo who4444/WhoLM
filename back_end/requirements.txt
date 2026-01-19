@@ -16,7 +16,7 @@ supabase
 uvicorn
 pydantic
 python-dotenv
-stable-whisper
+stable-ts
 PyMuPDF
 python-docx
 langchain-text-splitters
@@ -25,4 +25,4 @@ python-multipart
 psycopg2-binary
 llama-index-core
 llama-index-llms-gemini
-google-generativeai
+google-genai

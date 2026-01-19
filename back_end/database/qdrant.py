@@ -3,6 +3,7 @@ from typing import List, Dict, Optional, Tuple
 import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, SparseVectorParams, Distance, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client import models
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ class QdrantDB:
             self.client.create_collection(
                 collection_name=self.vector_collection,            
                 vectors_config=VectorParams(size=vector_dim, distance=Distance.COSINE),
-                sparse_vectors_config = SparseVectorParams()
+                sparse_vectors_config = {"sparse_vector": models.SparseVectorParams()}
             )
             logger.info(f"Created collection '{self.vector_collection}'")
     

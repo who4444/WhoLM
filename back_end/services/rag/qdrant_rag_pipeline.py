@@ -1,10 +1,10 @@
 
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 import numpy as np
 from .hybrid_retriever import HybridRetriever
 from .reranker import reranker
-from ingestion.embeddings.text_encoder import model as text_encoder_model
+from ingestion.embeddings.text_encoder import encode_texts
 from database.qdrant import QdrantDB
 
 logger = logging.getLogger(__name__)
@@ -12,8 +12,9 @@ logger = logging.getLogger(__name__)
 
 class QdrantRAGPipeline:
     """
-    RAG pipeline that uses Qdrant for persistent storage of embeddings
-    and hybrid retrieval (BM25 + dense).
+    Simplified RAG pipeline for querying and retrieving from Qdrant collections.
+    Handles both dense retrieval and hybrid retrieval (BM25 + dense).
+    Note: Document ingestion is handled by VectorIngester in processing_functions.py
     """
     
     def __init__(self, qdrant_url: str = "http://localhost:6333",
@@ -25,7 +26,7 @@ class QdrantRAGPipeline:
                  dense_weight: float = 0.5,
                  reranker_top_k: int = 3):
         """
-        Initialize Qdrant-integrated RAG pipeline.
+        Initialize RAG pipeline for querying.
         
         Args:
             qdrant_url: Qdrant server URL
@@ -56,94 +57,15 @@ class QdrantRAGPipeline:
         self.frame_collection = frame_collection
         self.embedding_dim = embedding_dim
         self.frame_embedding_dim = frame_embedding_dim
-        self.next_point_id = 0
     
-    def add_transcripts(self, documents: List[str], doc_ids: List[str],
-                     metadata: List[Dict] = None) -> Dict:
-        """
-        Add documents to RAG system with embeddings stored in Qdrant.
-        
-        Args:
-            documents: List of document texts
-            doc_ids: List of document identifiers
-            metadata: Optional metadata for each document
-            
-        Returns:
-            Dict with add operation results
-        """
-        if not documents:
-            logger.warning("No documents provided")
-            return {"success": False, "message": "No documents provided"}
-        
-        if len(documents) != len(doc_ids):
-            raise ValueError("documents and doc_ids must have same length")
-        
-        logger.info(f"Adding {len(documents)} documents to RAG system")
-        
-        try:
-            # Encode documents
-            embeddings_output = text_encoder_model.encode(
-                documents,
-                batch_size=16,
-                return_dense=True,
-                return_sparse=False
-            )
-            
-            # Extract dense embeddings
-            if hasattr(embeddings_output, 'tolist'):
-                embeddings = np.array(embeddings_output.tolist())
-            else:
-                embeddings = np.array(embeddings_output)
-            
-            # Prepare payloads for Qdrant
-            point_ids = list(range(self.next_point_id, self.next_point_id + len(documents)))
-            payloads = [
-                {
-                    "doc_id": doc_ids[i],
-                    "text": documents[i],
-                    **(metadata[i] if metadata else {})
-                }
-                for i in range(len(documents))
-            ]
-            
-            # Store in Qdrant
-            success = self.text_db.upsert(point_ids, embeddings, payloads)
-            
-            if success:
-                # Update hybrid retriever's BM25 index
-                self.hybrid_retriever.bm25_index.update_index(
-                    documents, doc_ids, metadata
-                )
-                
-                # Store embeddings in memory for hybrid retrieval
-                for doc_id, embedding in zip(doc_ids, embeddings):
-                    self.hybrid_retriever.embeddings[doc_id] = embedding / np.linalg.norm(embedding)
-                
-                self.next_point_id += len(documents)
-                self.hybrid_retriever.embedding_dim = self.embedding_dim
-                
-                logger.info(f"Successfully added {len(documents)} documents")
-                return {
-                    "success": True,
-                    "documents_added": len(documents),
-                    "total_documents": self.next_point_id
-                }
-            else:
-                return {"success": False, "message": "Failed to store embeddings in Qdrant"}
-                
-        except Exception as e:
-            logger.error(f"Error adding documents: {e}")
-            return {"success": False, "message": str(e)}
-    
-    def query(self, query_text: str, retriever_top_k: int = 10,
-             video_filter: Optional[str] = None) -> List[Dict]:
+    def query(self, query_text: str, retriever_top_k: int = 10) -> List[Dict]:
         """
         Execute RAG query: retrieve from Qdrant and rerank.
+        Searches both text and frame collections.
         
         Args:
             query_text: User query
-            retriever_top_k: Number of candidates to retrieve
-            video_filter: Optional video name to filter results
+            retriever_top_k: Number of candidates to retrieve before reranking
             
         Returns:
             List of reranked results with scores
@@ -151,37 +73,32 @@ class QdrantRAGPipeline:
         logger.info(f"Processing query: {query_text}")
         
         # Encode query
-        query_embedding = text_encoder_model.encode(
-            [query_text],
-            batch_size=1,
-            return_dense=True,
-            return_sparse=False
-        )[0]
+        query_embedding = encode_texts([query_text])[0]
+        query_embedding = np.array(query_embedding)
         
         # Retrieve from both text and frame collections
         text_results = self.text_db.search(query_embedding, limit=retriever_top_k // 2)
         frame_results = self.frame_db.search(query_embedding, limit=retriever_top_k // 2)
         
-        # Combine and sort results
+        # Combine and sort results by score
         all_results = text_results + frame_results
         all_results.sort(key=lambda x: x["score"], reverse=True)
-        qdrant_results = all_results[:retriever_top_k]
+        top_results = all_results[:retriever_top_k]
         
-        if not qdrant_results:
-            logger.warning("No results from Qdrant")
+        if not top_results:
+            logger.warning("No results found for query")
             return []
         
-        # Convert Qdrant results to hybrid retriever format
+        # Convert to candidate format
         candidates = [
             {
-                "doc_id": result["payload"]["doc_id"],
-                "text": result["payload"]["text"],
+                "doc_id": result["payload"].get("doc_id", ""),
+                "text": result["payload"].get("text", ""),
                 "metadata": {k: v for k, v in result["payload"].items() 
                            if k not in ["doc_id", "text"]},
-                "hybrid_score": result["score"],
-                "dense_score": result["score"]
+                "score": result["score"]
             }
-            for result in qdrant_results
+            for result in top_results
         ]
         
         # Rerank results
@@ -192,7 +109,7 @@ class QdrantRAGPipeline:
     
     def hybrid_query(self, query_text: str, retriever_top_k: int = 10) -> List[Dict]:
         """
-        Execute true hybrid query combining BM25 and Qdrant dense retrieval.
+        Execute hybrid query combining BM25 and Qdrant dense retrieval.
         Uses Qdrant for dense similarity and BM25 index for keyword matching.
         
         Args:
@@ -205,16 +122,11 @@ class QdrantRAGPipeline:
         logger.info(f"Processing hybrid query: {query_text}")
         
         # Encode query
-        query_embedding = text_encoder_model.encode(
-            [query_text],
-            batch_size=1,
-            return_dense=True,
-            return_sparse=False
-        )[0]
+        query_embedding = encode_texts([query_text])[0]
+        query_embedding = np.array(query_embedding)
         
         # Dense retrieval from Qdrant (text collection only for hybrid)
         qdrant_results = self.text_db.search(query_embedding, limit=retriever_top_k * 2)
-        dense_doc_ids = [r["payload"]["doc_id"] for r in qdrant_results]
         
         # BM25 retrieval from memory index
         bm25_doc_ids, bm25_scores = self.hybrid_retriever.bm25_index.retrieve(
@@ -232,7 +144,7 @@ class QdrantRAGPipeline:
             score_range = max_score - min_score if max_score != min_score else 1
             
             for result in qdrant_results:
-                doc_id = result["payload"]["doc_id"]
+                doc_id = result["payload"].get("doc_id", "")
                 norm_score = (result["score"] - min_score) / score_range
                 combined[doc_id] = {
                     "dense_score": norm_score,
@@ -252,15 +164,16 @@ class QdrantRAGPipeline:
                     combined[doc_id]["bm25_score"] = norm_bm25
                 else:
                     doc = self.hybrid_retriever.bm25_index.get_document(doc_id)
-                    combined[doc_id] = {
-                        "dense_score": 0,
-                        "bm25_score": norm_bm25,
-                        "data": {
-                            "doc_id": doc_id,
-                            "text": doc["text"],
-                            **doc["metadata"]
+                    if doc:
+                        combined[doc_id] = {
+                            "dense_score": 0,
+                            "bm25_score": norm_bm25,
+                            "data": {
+                                "doc_id": doc_id,
+                                "text": doc["text"],
+                                **doc["metadata"]
+                            }
                         }
-                    }
         
         # Calculate final hybrid scores
         w_dense = self.hybrid_retriever.dense_weight
@@ -295,10 +208,10 @@ class QdrantRAGPipeline:
         
         Args:
             query: Query text
-            candidates: Candidate results
+            candidates: Candidate results with 'text' field
             
         Returns:
-            Reranked results
+            Reranked results (top-k)
         """
         if not candidates:
             return []
@@ -306,6 +219,7 @@ class QdrantRAGPipeline:
         candidate_texts = [c["text"] for c in candidates]
         reranked_texts = reranker(query, candidate_texts, self.reranker_top_k)
         
+        # Match reranked texts back to candidates
         reranked_results = []
         for reranked_text in reranked_texts:
             for candidate in candidates:
@@ -324,56 +238,13 @@ class QdrantRAGPipeline:
         """
         text_info = self.text_db.get_collection_info()
         frame_info = self.frame_db.get_collection_info()
+        
         return {
             "text_collection": self.text_collection,
             "frame_collection": self.frame_collection,
-            "total_text_documents": text_info["points_count"] if text_info else 0,
-            "total_frame_documents": frame_info["points_count"] if frame_info else 0,
+            "total_text_documents": text_info.get("points_count", 0) if text_info else 0,
+            "total_frame_documents": frame_info.get("points_count", 0) if frame_info else 0,
             "text_embedding_dim": self.embedding_dim,
             "frame_embedding_dim": self.frame_embedding_dim,
-            "bm25_documents": len(self.hybrid_retriever.bm25_index.doc_ids),
-            "reranker_top_k": self.reranker_top_k,
-            "bm25_weight": self.hybrid_retriever.bm25_weight,
-            "dense_weight": self.hybrid_retriever.dense_weight
+            "reranker_top_k": self.reranker_top_k
         }
-    
-    def delete_documents(self, doc_ids: List[str]) -> bool:
-        """
-        Delete documents from RAG system.
-        
-        Args:
-            doc_ids: List of document IDs to delete
-            
-        Returns:
-            Success status
-        """
-        logger.info(f"Deleting {len(doc_ids)} documents")
-        
-        try:
-            # Find point IDs corresponding to doc_ids
-            # This requires searching through payloads - simplified approach
-            logger.warning("Document deletion requires rebuilding index")
-            return False
-        except Exception as e:
-            logger.error(f"Error deleting documents: {e}")
-            return False
-    
-    def clear_all(self) -> bool:
-        """
-        Clear all documents from RAG system.
-        
-        Returns:
-            Success status
-        """
-        try:
-            self.qdrant_db.clear_collection()
-            self.hybrid_retriever.bm25_index.documents = []
-            self.hybrid_retriever.bm25_index.doc_ids = []
-            self.hybrid_retriever.bm25_index.metadata = []
-            self.hybrid_retriever.embeddings = {}
-            self.next_point_id = 0
-            logger.info("Cleared all documents from RAG system")
-            return True
-        except Exception as e:
-            logger.error(f"Error clearing system: {e}")
-            return False

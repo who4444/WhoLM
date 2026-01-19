@@ -3,3 +3,4 @@ tests
 __pycache__
 .env
 POSTGRES_SETUP.md
+../qdrant_storage

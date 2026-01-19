@@ -21,6 +21,6 @@ def encode_texts(chunks):
     embeddings = model.encode(chunks,
                               batch_size=16,
                               return_dense=True)
-    return embeddings.tolist()
+    return embeddings['dense_vecs'].tolist()
 
 
