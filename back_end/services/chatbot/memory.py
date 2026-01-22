@@ -254,7 +254,7 @@ class ConversationMemory:
             List of similar conversation results
         """
         # Encode query
-        query_embedding = encode_texts([query])[0]
+        query_embedding = encode_texts([query])[0].tolist()
 
         # Search messages in PostgreSQL using vector similarity
         results = self.db.search_similar_messages(query_embedding, limit=limit)
@@ -401,7 +401,7 @@ class ConversationMemory:
         """Store a message in PostgreSQL."""
         try:
             # Create embedding for the message
-            embedding = encode_texts([message.content])[0].tolist()
+            embedding = encode_texts([message.content])[0]
 
             # Store in PostgreSQL
             self.db.insert_message(
@@ -425,7 +425,7 @@ class ConversationMemory:
             if context.user_id:
                 context_text += f" user: {context.user_id}"
 
-            embedding = encode_texts([context_text])[0]
+            embedding = encode_texts([context_text])[0].tolist()
 
             # Store in PostgreSQL
             self.db.insert_context(

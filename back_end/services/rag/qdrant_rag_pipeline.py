@@ -2,10 +2,13 @@
 import logging
 from typing import List, Dict, Optional
 import numpy as np
+import torch
 from .hybrid_retriever import HybridRetriever
 from .reranker import reranker
 from ingestion.embeddings.text_encoder import encode_texts
+import open_clip
 from database.qdrant import QdrantDB
+from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +43,22 @@ class QdrantRAGPipeline:
         """
         self.text_db = QdrantDB(
             url=qdrant_url,
-            vector_collection=text_collection,
-            vector_dim=embedding_dim
+            document_collection=text_collection,
+            frame_collection=frame_collection,
+            doc_dim=embedding_dim,
+            frame_dim=frame_embedding_dim
         )
-        self.frame_db = QdrantDB(
-            url=qdrant_url,
-            vector_collection=frame_collection,
-            vector_dim=frame_embedding_dim
+        # Use same instance for both since QdrantDB now handles both collections
+        self.frame_db = self.text_db
+        
+        # Initialize CLIP model for frame encoding
+        self.clip_model, _, _ = open_clip.create_model_and_transforms(
+            Config.CLIP_MODEL_NAME, 
+            pretrained='openai'
         )
+        self.clip_tokenizer = open_clip.get_tokenizer(Config.CLIP_MODEL_NAME)
+        self.clip_model.eval()
+        
         self.hybrid_retriever = HybridRetriever(
             bm25_weight=bm25_weight,
             dense_weight=dense_weight
@@ -58,34 +69,35 @@ class QdrantRAGPipeline:
         self.embedding_dim = embedding_dim
         self.frame_embedding_dim = frame_embedding_dim
     
-    def query(self, query_text: str, retriever_top_k: int = 10) -> List[Dict]:
+    def query(self, query_text: str, retriever_top_k: int = 10, search_frames: bool = False) -> List[Dict]:
         """
         Execute RAG query: retrieve from Qdrant and rerank.
-        Searches both text and frame collections.
+        Searches text collection (BGE-M3) or frame collection (CLIP) separately.
         
         Args:
             query_text: User query
             retriever_top_k: Number of candidates to retrieve before reranking
+            search_frames: If True, search frame collection with CLIP encoder. If False, search text with BGE-M3
             
         Returns:
             List of reranked results with scores
         """
-        logger.info(f"Processing query: {query_text}")
+        logger.info(f"Processing query: {query_text} (search_frames={search_frames})")
         
-        # Encode query
-        query_embedding = encode_texts([query_text])[0]
-        query_embedding = np.array(query_embedding)
+        if search_frames:
+            # Use CLIP's text encoder for frame embeddings
+            text_tokens = self.clip_tokenizer([query_text])
+            with torch.no_grad():
+                query_embedding = self.clip_model.encode_text(text_tokens)
+            query_embedding = query_embedding.cpu().numpy()[0]
+            results = self.text_db.frame_search(query_embedding, limit=retriever_top_k)
+        else:
+            # Use BGE-M3 encoder for text documents
+            query_embedding = encode_texts([query_text])[0]
+            query_embedding = np.array(query_embedding)
+            results = self.text_db.text_search(query_embedding, limit=retriever_top_k, collection_type="document")
         
-        # Retrieve from both text and frame collections
-        text_results = self.text_db.search(query_embedding, limit=retriever_top_k // 2)
-        frame_results = self.frame_db.search(query_embedding, limit=retriever_top_k // 2)
-        
-        # Combine and sort results by score
-        all_results = text_results + frame_results
-        all_results.sort(key=lambda x: x["score"], reverse=True)
-        top_results = all_results[:retriever_top_k]
-        
-        if not top_results:
+        if not results:
             logger.warning("No results found for query")
             return []
         
@@ -98,7 +110,7 @@ class QdrantRAGPipeline:
                            if k not in ["doc_id", "text"]},
                 "score": result["score"]
             }
-            for result in top_results
+            for result in results
         ]
         
         # Rerank results
@@ -126,7 +138,7 @@ class QdrantRAGPipeline:
         query_embedding = np.array(query_embedding)
         
         # Dense retrieval from Qdrant (text collection only for hybrid)
-        qdrant_results = self.text_db.search(query_embedding, limit=retriever_top_k * 2)
+        qdrant_results = self.text_db.text_search(query_embedding, collection_type="document", limit=retriever_top_k * 2)
         
         # BM25 retrieval from memory index
         bm25_doc_ids, bm25_scores = self.hybrid_retriever.bm25_index.retrieve(

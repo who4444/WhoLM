@@ -4,6 +4,7 @@ import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, SparseVectorParams, Distance, PointStruct, Filter, FieldCondition, MatchValue
 from qdrant_client import models
+from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +15,10 @@ class QdrantDB:
     """
     
     def __init__(self, url: str = "http://localhost:6333", 
-                 vector_collection: str = "documents",
-                 vector_dim: int = 1024,
+                 document_collection: str = "text_documents",
+                 frame_collection: str = "frame_embeddings",
+                 doc_dim: int = 1024,
+                 frame_dim: int = 512,
                  timeout: int = 30):
         """
         Initialize Qdrant client and create collections if needed.
@@ -27,19 +30,30 @@ class QdrantDB:
             timeout: Request timeout in seconds
         """
         self.client = QdrantClient(url=url, timeout=timeout)
-        self.vector_collection = vector_collection
-        self.vector_dim = vector_dim
-        
-        # Create vector collection if it doesn't exist
-        if not self.client.collection_exists(self.vector_collection):
+        self.document_collection = Config.QDRANT_DOC_COLLECTION
+        self.vdocument_dim = Config.QDRANT_TEXT_EMBEDDING_DIM
+        self.frame_collection = Config.QDRANT_FRAME_COLLECTION
+        self.frame_dim = Config.QDRANT_IMAGE_EMBEDDING_DIM
+
+        # Create document collection if it doesn't exist
+        if not self.client.collection_exists(self.document_collection):
             self.client.create_collection(
-                collection_name=self.vector_collection,            
-                vectors_config=VectorParams(size=vector_dim, distance=Distance.COSINE),
+                collection_name=self.document_collection,            
+                vectors_config=VectorParams(size=self.vdocument_dim, distance=Distance.COSINE),
                 sparse_vectors_config = {"sparse_vector": models.SparseVectorParams()}
             )
-            logger.info(f"Created collection '{self.vector_collection}'")
+            logger.info(f"Created collection '{self.document_collection}'")
+        
+        # Create frame collection if it doesn't exist
+        if not self.client.collection_exists(self.frame_collection):
+            self.client.create_collection(
+                collection_name=self.frame_collection,            
+                vectors_config=VectorParams(size=self.frame_dim, distance=Distance.COSINE),
+                sparse_vectors_config = {"sparse_vector": models.SparseVectorParams()}
+            )
+            logger.info(f"Created collection '{self.frame_collection}'")
     
-    def upsert(self, ids: List[int], vectors: np.ndarray, payloads: List[Dict]) -> bool:
+    def upsert(self, ids: List[int], vectors: np.ndarray, payloads: List[Dict], collection_type: str = "document") -> bool:
         """
         Insert or update vectors with their payloads.
         
@@ -47,13 +61,14 @@ class QdrantDB:
             ids: List of point IDs
             vectors: Embeddings array (n, vector_dim)
             payloads: List of payload dicts with document metadata
+            collection_type: Type of collection - "document" or "frame"
             
         Returns:
             Success status
         """
         if len(ids) != len(vectors) or len(ids) != len(payloads):
             raise ValueError("ids, vectors, and payloads must have same length")
-        
+                
         # Create points
         points = [
             PointStruct(
@@ -65,51 +80,100 @@ class QdrantDB:
         ]
         
         try:
+            collection_name = self.document_collection if collection_type == "document" else self.frame_collection
             self.client.upsert(
-                collection_name=self.vector_collection,
+                collection_name=collection_name,
                 points=points
             )
-            logger.info(f"Upserted {len(points)} points to '{self.vector_collection}'")
+            logger.info(f"Upserted {len(points)} points to '{collection_name}'")
             return True
         except Exception as e:
             logger.error(f"Error upserting points: {e}")
             return False
     
-    def search(self, query_vector: np.ndarray, limit: int = 10) -> List[Dict]:
+    def text_search(self, query_vector: np.ndarray, limit: int = 10, collection_type: str = "document") -> List[Dict]:
         """
         Search for similar vectors using cosine similarity.
         
         Args:
             query_vector: Query embedding
             limit: Maximum number of results
+            collection_type: Type of collection - "document" or "frame"
             
         Returns:
             List of search results with score and payload
         """
         # Normalize query vector
         query_vector = query_vector / np.linalg.norm(query_vector)
+        collection_name = self._get_collection_name(collection_type)
         
         try:
-            results = self.client.search(
-                collection_name=self.vector_collection,
+            results = self.client.query_points(
+                collection_name=collection_name,
                 query_vector=query_vector.tolist(),
                 limit=limit
             )
-            
             return [
                 {
                     "id": result.id,
                     "score": result.score,
                     "payload": result.payload
                 }
-                for result in results
+                for result in results.points
             ]
         except Exception as e:
             logger.error(f"Error searching vectors: {e}")
             return []
     
+
+    def frame_search(self, query_vector: np.ndarray, limit: int = 10, collection_type: str = "frame") -> List[Dict]:
+        """
+        Search for similar frame vectors using cosine similarity.
+        
+        Args:
+            query_vector: Query embedding
+            limit: Maximum number of results
+            collection_type: Type of collection - "document" or "frame"
+            
+        Returns:
+            List of search results with score and payload
+        """
+        # Normalize query vector
+        query_vector = query_vector / np.linalg.norm(query_vector)
+        collection_name = self._get_collection_name(collection_type)
+        
+        try:
+            results = self.client.query_points(
+                collection_name=collection_name,
+                query_vector=query_vector.tolist(),
+                limit=limit
+            )
+            return [
+                {
+                    "id": result.id,
+                    "score": result.score,
+                    "payload": result.payload
+                }
+                for result in results.points
+            ]
+        except Exception as e:
+            logger.error(f"Error searching frame vectors: {e}")
+            return []
+    
+    def _get_collection_name(self, collection_type: str) -> str:
+        """
+        Get collection name based on type.
+        
+        Args:
+            collection_type: Type of collection - "document" or "frame"
+            
+        Returns:
+            Collection name
+        """
+        return self.document_collection if collection_type == "document" else self.frame_collection
+
     def search_with_filter(self, query_vector: np.ndarray, 
-                          filter_dict: Dict, limit: int = 10) -> List[Dict]:
+                          filter_dict: Dict, limit: int = 10, collection_type: str = "document") -> List[Dict]:
         """
         Search with optional metadata filtering.
         
@@ -117,29 +181,32 @@ class QdrantDB:
             query_vector: Query embedding
             filter_dict: Filter conditions (e.g., {"video_name": "video_1"})
             limit: Maximum number of results
+            collection_type: Type of collection - "document" or "frame"
             
         Returns:
-            Filtered search results
+            Filtered search results with collection_type
         """
         # Normalize query vector
         query_vector = query_vector / np.linalg.norm(query_vector)
+        collection_name = self._get_collection_name(collection_type)
         
         try:
-            results = self.client.search(
-                collection_name=self.vector_collection,
+            results = self.client.query_points(
+                collection_name=collection_name,
                 query_vector=query_vector.tolist(),
                 limit=limit
             )
             
             # Client-side filtering
             filtered = []
-            for result in results:
+            for result in results.points:
                 payload = result.payload
                 if all(payload.get(k) == v for k, v in filter_dict.items()):
                     filtered.append({
                         "id": result.id,
                         "score": result.score,
-                        "payload": result.payload
+                        "payload": result.payload,
+                        "collection_type": collection_type
                     })
                 if len(filtered) >= limit:
                     break
@@ -149,19 +216,22 @@ class QdrantDB:
             logger.error(f"Error searching with filter: {e}")
             return []
     
-    def get_point(self, point_id: int) -> Optional[Dict]:
+    def get_point(self, point_id: int, collection_type: str = "document") -> Optional[Dict]:
         """
         Retrieve a single point by ID.
         
         Args:
             point_id: Point ID
+            collection_type: Type of collection - "document" or "frame"
             
         Returns:
             Point data with vector and payload
         """
+        collection_name = self._get_collection_name(collection_type)
+        
         try:
             points = self.client.retrieve(
-                collection_name=self.vector_collection,
+                collection_name=collection_name,
                 ids=[point_id]
             )
             
@@ -177,78 +247,95 @@ class QdrantDB:
             logger.error(f"Error retrieving point: {e}")
             return None
     
-    def delete_points(self, ids: List[int]) -> bool:
+    def delete_points(self, ids: List[int], collection_type: str = "document") -> bool:
         """
         Delete points by IDs.
         
         Args:
             ids: List of point IDs to delete
+            collection_type: Type of collection - "document" or "frame"
             
         Returns:
             Success status
         """
+        collection_name = self._get_collection_name(collection_type)
+        
         try:
             self.client.delete(
-                collection_name=self.vector_collection,
+                collection_name=collection_name,
                 points_selector=[int(id) for id in ids]
             )
-            logger.info(f"Deleted {len(ids)} points from '{self.vector_collection}'")
+            logger.info(f"Deleted {len(ids)} points from '{collection_name}'")
             return True
         except Exception as e:
             logger.error(f"Error deleting points: {e}")
             return False
     
-    def clear_collection(self) -> bool:
+    def clear_collection(self, collection_type: str = "document") -> bool:
         """
         Delete all points in the collection.
         
+        Args:
+            collection_type: Type of collection - "document" or "frame"
+            
         Returns:
             Success status
         """
+        collection_name = self._get_collection_name(collection_type)
+        vector_dim = self.vdocument_dim if collection_type == "document" else self.frame_dim
+        
         try:
-            self.client.delete_collection(collection_name=self.vector_collection)
+            self.client.delete_collection(collection_name=collection_name)
             self.client.create_collection(
-                collection_name=self.vector_collection,
-                vectors_config=VectorParams(size=self.vector_dim, distance=Distance.COSINE)
+                collection_name=collection_name,
+                vectors_config=VectorParams(size=vector_dim, distance=Distance.COSINE)
             )
-            logger.info(f"Cleared collection '{self.vector_collection}'")
+            logger.info(f"Cleared collection '{collection_name}'")
             return True
         except Exception as e:
             logger.error(f"Error clearing collection: {e}")
             return False
     
-    def get_collection_info(self) -> Optional[Dict]:
+    def get_collection_info(self, collection_type: str = "document") -> Optional[Dict]:
         """
         Get collection statistics.
         
+        Args:
+            collection_type: Type of collection - "document" or "frame"
+            
         Returns:
             Collection info with point count and vector config
         """
+        collection_name = self._get_collection_name(collection_type)
+        vector_dim = self.vdocument_dim if collection_type == "document" else self.frame_dim
+        
         try:
-            info = self.client.get_collection(self.vector_collection)
+            info = self.client.get_collection(collection_name)
             return {
                 "name": info.name,
                 "points_count": info.points_count,
                 "vectors_count": info.vectors_count,
-                "vector_size": self.vector_dim,
+                "vector_size": vector_dim,
                 "status": str(info.status)
             }
         except Exception as e:
             logger.error(f"Error getting collection info: {e}")
             return None
     
-    def batch_search(self, query_vectors: np.ndarray, limit: int = 10) -> List[List[Dict]]:
+    def batch_search(self, query_vectors: np.ndarray, limit: int = 10, collection_type: str = "document") -> List[List[Dict]]:
         """
         Search with multiple query vectors.
         
         Args:
             query_vectors: Array of query embeddings (n, vector_dim)
             limit: Maximum results per query
+            collection_type: Type of collection - "document" or "frame"
             
         Returns:
             List of result lists for each query
         """
         results = []
         for query_vector in query_vectors:
-            results.append(self.search(query_vector, limit))
+            results.append(self.text_search(query_vector, limit, collection_type))
         return results
+    

@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: video_qa_user
+      POSTGRES_PASSWORD: secure_password
+      POSTGRES_DB: video_qa_db
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+  qdrant:
+    image: qdrant/qdrant:v1.2.0
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    

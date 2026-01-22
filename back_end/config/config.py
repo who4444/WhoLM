@@ -11,7 +11,7 @@ class Config:
 
     # Paths
     KEYFRAMES_DIR: str = ""
-    TEMP_DIR: str = "back_end/tmp"
+    TEMP_DIR: str = "tmp"
 
     # CLIP configs
     MAX_IMAGE_SIZE: Tuple[int, int] = (512, 512)
