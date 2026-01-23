@@ -50,6 +50,10 @@ class WhoLMClient:
         response = requests.post(f"{self.base_url}/upload/youtube", json=data)
         return response.json()
 
+    def get_sessions(self) -> List[Dict[str, Any]]:
+        response = requests.get(f"{self.base_url}/sessions")
+        return response.json()
+
 def main():
     client = WhoLMClient()
 
@@ -59,93 +63,112 @@ def main():
     """)
 
     with st.sidebar:
-        st.header("Upload Content")
+        st.header("📁 Upload Content")
 
+        # Single file uploader
         uploaded_file = st.file_uploader(
-            "Choose a file",
+            "Choose a file to upload",
             type=["mp4", "avi", "mov", "pdf", "txt", "docx"]
         )
 
         if uploaded_file is not None:
             content_type = uploaded_file.type
+            
+            if st.button("📤 Upload File", use_container_width=True, key="upload_btn"):
+                with st.spinner("Uploading..."):
+                    try:
+                        url_response = client.get_upload_url(uploaded_file.name, content_type)
+                        if not url_response.get("upload_url"):
+                            st.error("Failed to get upload URL")
+                        else:
+                            upload_response = requests.put(
+                                url_response["upload_url"],
+                                data=uploaded_file.getvalue(),
+                                headers={"Content-Type": content_type}
+                            )
 
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("Upload as Video", use_container_width=True):
-                    with st.spinner("Uploading..."):
-                        try:
-                            url_response = client.get_upload_url(uploaded_file.name, content_type)
-                            if not url_response.get("upload_url"):
-                                st.error("Failed to get upload URL")
+                            if upload_response.status_code == 200:
+                                with st.spinner("Processing file..."):
+                                    process_response = client.process_uploaded_file(
+                                        url_response["content_id"],
+                                        uploaded_file.name
+                                    )
+                                    if process_response.get("success"):
+                                        st.success("File uploaded and processing started!")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Processing failed: {process_response.get('error', 'Unknown error')}")
                             else:
-                                upload_response = requests.put(
-                                    url_response["upload_url"],
-                                    data=uploaded_file.getvalue(),
-                                    headers={"Content-Type": content_type}
-                                )
+                                st.error("Failed to upload file to cloud storage")
 
-                                if upload_response.status_code == 200:
-                                    with st.spinner("Processing video..."):
-                                        process_response = client.process_uploaded_file(
-                                            url_response["content_id"],
-                                            uploaded_file.name
-                                        )
-                                        if process_response.get("success"):
-                                            st.success("Video uploaded and processing started!")
-                                            st.rerun()
-                                        else:
-                                            st.error(f"Processing failed: {process_response.get('error', 'Unknown error')}")
-                                else:
-                                    st.error("Failed to upload file to cloud storage")
-
-                        except Exception as e:
-                            st.error(f"Failed to upload video: {str(e)}")
-
-            with col2:
-                if st.button("Upload as Document", use_container_width=True):
-                    with st.spinner("Uploading..."):
-                        try:
-                            url_response = client.get_upload_url(uploaded_file.name, content_type)
-                            if not url_response.get("upload_url"):
-                                st.error("Failed to get upload URL")
-                            else:
-                                upload_response = requests.put(
-                                    url_response["upload_url"],
-                                    data=uploaded_file.getvalue(),
-                                    headers={"Content-Type": content_type}
-                                )
-
-                                if upload_response.status_code == 200:
-                                    with st.spinner("Processing document..."):
-                                        process_response = client.process_uploaded_file(
-                                            url_response["content_id"],
-                                            uploaded_file.name
-                                        )
-                                        if process_response.get("success"):
-                                            st.success("Document uploaded and processing started!")
-                                            st.rerun()
-                                        else:
-                                            st.error(f"Processing failed: {process_response.get('error', 'Unknown error')}")
-                                else:
-                                    st.error("Failed to upload file to cloud storage")
-
-                        except Exception as e:
-                            st.error(f"Failed to upload document: {str(e)}")
+                    except Exception as e:
+                        st.error(f"Failed to upload file: {str(e)}")
 
         st.divider()
 
-        st.header("Settings")
+        # YouTube input
+        st.subheader("🎥 YouTube Video")
+        youtube_url = st.text_input(
+            "Paste YouTube link",
+            placeholder="https://www.youtube.com/watch?v=...",
+            key="youtube_input"
+        )
+        
+        if youtube_url and st.button("📥 Add YouTube Video", use_container_width=True, key="youtube_btn"):
+            with st.spinner("Processing YouTube video..."):
+                try:
+                    response = client.upload_youtube_video(youtube_url)
+                    if response.get("success"):
+                        st.success("YouTube video processing started!")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed: {response.get('error', 'Unknown error')}")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+
+        st.divider()
+
+        # Sessions panel
+        st.subheader("💬 Previous Sessions")
+        try:
+            sessions = client.get_sessions()
+            if sessions:
+                for session in sessions:
+                    session_id = session.get("session_id")
+                    topic = session.get("topic", "General Chat")
+                    last_msg = session.get("recent_message", "No messages")
+                    
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        if st.button(
+                            f"📝 {topic}\n{last_msg[:30]}...",
+                            key=f"session_{session_id}",
+                            use_container_width=True
+                        ):
+                            st.session_state.session_id = session_id
+                            st.rerun()
+                    with col2:
+                        if st.button("✕", key=f"close_{session_id}"):
+                            pass  # Could add delete session functionality
+            else:
+                st.info("No previous sessions yet.")
+        except Exception as e:
+            st.warning(f"Could not load sessions: {str(e)}")
+
+        st.divider()
+
+        st.header("⚙️ Settings")
         backend_url = st.text_input("Backend URL", value=BACKEND_URL)
         if backend_url != BACKEND_URL:
             st.session_state.client = WhoLMClient(backend_url)
 
-        st.header("Chat Sessions")
-        if st.button("New Chat Session"):
+        if st.button("➕ New Chat Session", use_container_width=True):
             st.session_state.session_id = None
             st.session_state.messages = []
             st.rerun()
 
-    st.header("Ask Questions")
+    # Main chat area
+    st.header("💭 Chat")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -162,7 +185,7 @@ def main():
                         for source in message["sources"]:
                             st.write(f"**{source.get('type', 'Source')}:** {source.get('content', '')[:200]}...")
 
-    if prompt := st.chat_input("Ask a question about your uploaded content..."):
+    if prompt := st.chat_input("Ask a question about your uploaded content...", key="main_chat_input"):
         if not st.session_state.messages:
             st.session_state.messages = []
 
@@ -222,7 +245,7 @@ def main():
                         })
 
     st.divider()
-    st.header("Uploaded Content")
+    st.header("📚 Uploaded Content")
 
     try:
         content_list = client.get_uploaded_content()
@@ -230,7 +253,7 @@ def main():
             cols = st.columns(3)
             for i, content in enumerate(content_list):
                 with cols[i % 3]:
-                    with st.container():
+                    with st.container(border=True):
                         content_type = content.get("type", "Unknown")
                         name = content.get("name", "Unnamed")
                         upload_time = content.get("upload_time", "Unknown")
@@ -241,9 +264,10 @@ def main():
                         st.caption(f"Type: {content_type}")
                         st.caption(f"Uploaded: {upload_time}")
 
-                        if st.button("Delete", key=content.get("id"), use_container_width=True):
+                        content_id = content.get("id") or content.get("content_id")
+                        if st.button("🗑️ Delete", key=f"delete_{content_id}", use_container_width=True):
                             try:
-                                delete_response = client.delete_content(content.get("id"))
+                                delete_response = client.delete_content(content_id)
                                 if delete_response.get("success"):
                                     st.success("Content deleted!")
                                     st.rerun()
