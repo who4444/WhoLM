@@ -27,20 +27,10 @@ class VectorIngester:
         """
         self.qdrant_url = qdrant_url or Config.QDRANT_URL
 
-        # Initialize collection managers for different modalities
-        self.text_collection = QdrantDB(
-            url=self.qdrant_url,
-            vector_collection=Config.QDRANT_DOC_COLLECTION,
-            vector_dim=1024  # BGE-M3 
-        )
+        # Initialize single QdrantDB instance (handles all collections)
+        self.db = QdrantDB(url=self.qdrant_url)
 
-        self.frame_collection = QdrantDB(
-            url=self.qdrant_url,
-            vector_collection=Config.QDRANT_VD_COLLECTION,
-            vector_dim=512  # CLIP 
-        )
-
-        logger.info("VectorIngester initialized with collections: text_documents, frame_embeddings")
+        logger.info("VectorIngester initialized with Qdrant collections: text_documents, frame_embeddings, conversations, conversation_contexts")
 
     def push_text_embeddings(self, texts: List[str], embeddings: np.ndarray,
                            batch_size: int = 100) -> Dict:
@@ -77,7 +67,7 @@ class VectorIngester:
         ids = [self._generate_point_id(payload["doc_id"]) for payload in payloads]
 
         # Push in batches
-        return self._batch_upsert(self.text_collection, ids, embeddings, payloads, batch_size)
+        return self._batch_upsert(self.db, ids, embeddings, payloads, batch_size, collection_type="document")
 
     def push_frame_embeddings(self, frame_paths: List[str], embeddings: np.ndarray,
                            batch_size: int = 100) -> Dict:
@@ -122,7 +112,7 @@ class VectorIngester:
         ids = [self._generate_point_id(payload["doc_id"]) for payload in payloads]
 
         # Push in batches
-        return self._batch_upsert(self.frame_collection, ids, embeddings, payloads, batch_size)
+        return self._batch_upsert(self.db, ids, embeddings, payloads, batch_size, collection_type="frame")
 
     def push_video_transcript(self, video_id: str, transcript_chunks: List[Dict],
                             embeddings: np.ndarray, batch_size: int = 100) -> Dict:
@@ -164,7 +154,7 @@ class VectorIngester:
         ids = [self._generate_point_id(payload["doc_id"]) for payload in payloads]
 
         # Push in batches
-        return self._batch_upsert(self.text_collection, ids, embeddings, payloads, batch_size)
+        return self._batch_upsert(self.db, ids, embeddings, payloads, batch_size, collection_type="document")
 
     def push_document_embeddings(self, doc_id: str, text_chunks: List[str],
                                embeddings: np.ndarray, 
@@ -204,7 +194,7 @@ class VectorIngester:
         ids = [self._generate_point_id(payload["doc_id"]) for payload in payloads]
 
         # Push in batches
-        return self._batch_upsert(self.text_collection, ids, embeddings, payloads, batch_size)
+        return self._batch_upsert(self.db, ids, embeddings, payloads, batch_size, collection_type="document")
 
     def search_text(self, query_embedding: np.ndarray, limit: int = 10,
                    filters: Dict = None) -> List[Dict]:
@@ -220,9 +210,9 @@ class VectorIngester:
             Search results
         """
         if filters:
-            return self.text_collection.search_with_filter(query_embedding, filters, limit)
+            return self.db.search_with_filter(query_embedding, filters, limit, collection_type="document")
         else:
-            return self.text_collection.search(query_embedding, limit)
+            return self.db.text_search(query_embedding, limit, collection_type="document")
 
     def search_frames(self, query_embedding: np.ndarray, limit: int = 10,
                      filters: Dict = None) -> List[Dict]:
@@ -238,9 +228,9 @@ class VectorIngester:
             Search results
         """
         if filters:
-            return self.frame_collection.search_with_filter(query_embedding, filters, limit)
+            return self.db.search_with_filter(query_embedding, filters, limit, collection_type="frame")
         else:
-            return self.frame_collection.search(query_embedding, limit)
+            return self.db.frame_search(query_embedding, limit, collection_type="frame")
 
     def get_collection_stats(self) -> Dict:
         """
@@ -249,8 +239,8 @@ class VectorIngester:
         Returns:
             Dict with collection statistics
         """
-        text_stats = self.text_collection.get_collection_info()
-        frame_stats = self.frame_collection.get_collection_info()
+        text_stats = self.db.get_collection_info(collection_type="document")
+        frame_stats = self.db.get_collection_info(collection_type="frame")
 
         return {
             "text_collection": text_stats,
@@ -264,8 +254,8 @@ class VectorIngester:
         Returns:
             Dict with operation results
         """
-        text_result = self.text_collection.clear_collection()
-        frame_result = self.frame_collection.clear_collection()
+        text_result = self.db.clear_collection(collection_type="document")
+        frame_result = self.db.clear_collection(collection_type="frame")
 
         return {
             "text_collection_cleared": text_result,
@@ -274,7 +264,7 @@ class VectorIngester:
 
     def _batch_upsert(self, collection: QdrantDB, ids: List[int],
                      embeddings: np.ndarray, payloads: List[Dict],
-                     batch_size: int) -> Dict:
+                     batch_size: int, collection_type: str = "document") -> Dict:
         """
         Upsert embeddings in batches.
 
@@ -301,7 +291,7 @@ class VectorIngester:
             batch_payloads = payloads[i:end_idx]
 
             try:
-                success = collection.upsert(batch_ids, batch_embeddings, batch_payloads)
+                success = collection.upsert(batch_ids, batch_embeddings, batch_payloads, collection_type=collection_type)
                 if success:
                     successful_batches += 1
                 else:

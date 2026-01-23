@@ -94,7 +94,7 @@ async def process_uploaded_file(request: ProcessRequest, background_tasks: Backg
         # Find the upload metadata
         upload_metadata = None
         for content in uploaded_content:
-            if content["content_id"] == request.content_id:
+            if content.get("content_id") == request.content_id:
                 upload_metadata = content
                 break
 
@@ -105,7 +105,7 @@ async def process_uploaded_file(request: ProcessRequest, background_tasks: Backg
         upload_metadata["status"] = "processing"
         upload_metadata["name"] = request.name
 
-        # Add to processed content list
+        # Create content info for tracking
         content_info = {
             "id": request.content_id,
             "name": request.name,
@@ -114,6 +114,8 @@ async def process_uploaded_file(request: ProcessRequest, background_tasks: Backg
             "upload_time": upload_metadata["upload_time"],
             "status": "processing"
         }
+        # Add to uploaded content list for frontend display
+        uploaded_content.append(content_info)
 
         # Process in background
         if upload_metadata["content_type"] == "video":
@@ -205,6 +207,32 @@ async def get_chat_history(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/sessions")
+async def get_sessions():
+    """Get all active sessions"""
+    try:
+        # Get sessions from chatbot memory
+        sessions = list(chatbot.memory.active_contexts.keys())
+        
+        session_info = []
+        for session_id in sessions:
+            context = chatbot.memory.get_context(session_id)
+            if context:
+                recent_messages = chatbot.memory.get_recent_messages(session_id, limit=1)
+                session_info.append({
+                    "session_id": session_id,
+                    "user_id": context.user_id,
+                    "topic": context.topic,
+                    "last_activity": context.last_activity.isoformat() if context.last_activity else None,
+                    "recent_message": recent_messages[0].content if recent_messages else None
+                })
+        
+        return session_info
+    except Exception as e:
+        logger.error(f"Error getting sessions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/content")
 async def get_uploaded_content():
     """Get list of uploaded content"""
@@ -223,7 +251,7 @@ async def delete_content(content_id: str):
         content_to_delete = None
 
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id or content.get("content_id") == content_id:
                 content_to_delete = content
                 break
 
@@ -231,7 +259,7 @@ async def delete_content(content_id: str):
             raise HTTPException(status_code=404, detail="Content not found")
 
         # Remove from list
-        uploaded_content = [c for c in uploaded_content if c["id"] != content_id]
+        uploaded_content = [c for c in uploaded_content if c.get("id") != content_id and c.get("content_id") != content_id]
 
         # Clean up file if it exists
         file_path = content_to_delete.get("file_path")
@@ -254,7 +282,7 @@ def process_supabase_video_background(content_id: str, storage_path: str, video_
 
         # Update status
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id or content.get("content_id") == content_id:
                 content["status"] = "downloading"
                 break
 
@@ -269,7 +297,7 @@ def process_supabase_video_background(content_id: str, storage_path: str, video_
 
         # Update status
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id or content.get("content_id") == content_id:
                 content["status"] = "processing"
                 break
 
@@ -278,7 +306,7 @@ def process_supabase_video_background(content_id: str, storage_path: str, video_
 
         # Update status
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id or content.get("content_id") == content_id:
                 if result.get("success"):
                     content["status"] = "completed"
                     content["processing_result"] = result
@@ -293,7 +321,7 @@ def process_supabase_video_background(content_id: str, storage_path: str, video_
         logger.error(f"Error in background S3 video processing: {str(e)}")
         # Update status to failed
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id or content.get("content_id") == content_id:
                 content["status"] = "failed"
                 content["error"] = str(e)
                 break
@@ -310,7 +338,7 @@ def process_supabase_document_background(content_id: str, storage_path: str, doc
 
         # Update status
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id or content.get("content_id") == content_id:
                 content["status"] = "downloading"
                 break
 
@@ -325,7 +353,7 @@ def process_supabase_document_background(content_id: str, storage_path: str, doc
 
         # Update status
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id or content.get("content_id") == content_id:
                 content["status"] = "processing"
                 break
 
@@ -334,7 +362,7 @@ def process_supabase_document_background(content_id: str, storage_path: str, doc
 
         # Update status
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id or content.get("content_id") == content_id:
                 if result.get("success"):
                     content["status"] = "completed"
                     content["processing_result"] = result
@@ -349,7 +377,7 @@ def process_supabase_document_background(content_id: str, storage_path: str, doc
         logger.error(f"Error in background Supabase document processing: {str(e)}")
         # Update status to failed
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id or content.get("content_id") == content_id:
                 content["status"] = "failed"
                 content["error"] = str(e)
                 break
@@ -366,7 +394,7 @@ def process_youtube_video_background(content_id: str, youtube_url: str):
 
         # Update status
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id:
                 content["status"] = "downloading"
                 break
 
@@ -398,7 +426,7 @@ def process_youtube_video_background(content_id: str, youtube_url: str):
 
         # Update status
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id:
                 content["status"] = "processing"
                 content["file_path"] = video_path
                 break
@@ -408,7 +436,7 @@ def process_youtube_video_background(content_id: str, youtube_url: str):
 
         # Update status
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id:
                 if result.get("success"):
                     content["status"] = "completed"
                     content["processing_result"] = result
@@ -426,7 +454,7 @@ def process_youtube_video_background(content_id: str, youtube_url: str):
         logger.error(f"Error in background YouTube video processing: {str(e)}")
         # Update status to failed
         for content in uploaded_content:
-            if content["content_id"] == content_id:
+            if content.get("id") == content_id:
                 content["status"] = "failed"
                 content["error"] = str(e)
                 break

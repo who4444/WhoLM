@@ -25,15 +25,17 @@ class QdrantDB:
         
         Args:
             url: Qdrant server URL
-            vector_collection: Name of vector collection
-            vector_dim: Dimension of vectors
+            document_collection: Name of text documents collection
+            frame_collection: Name of frame embeddings collection
+            doc_dim: Dimension of document embeddings
+            frame_dim: Dimension of frame embeddings
             timeout: Request timeout in seconds
         """
         self.client = QdrantClient(url=url, timeout=timeout)
         self.document_collection = Config.QDRANT_DOC_COLLECTION
         self.vdocument_dim = Config.QDRANT_TEXT_EMBEDDING_DIM
         self.frame_collection = Config.QDRANT_FRAME_COLLECTION
-        self.frame_dim = Config.QDRANT_IMAGE_EMBEDDING_DIM
+        self.frame_dim = Config.QDRANT_FRAME_EMBEDDING_DIM
 
         # Create document collection if it doesn't exist
         if not self.client.collection_exists(self.document_collection):
@@ -52,6 +54,22 @@ class QdrantDB:
                 sparse_vectors_config = {"sparse_vector": models.SparseVectorParams()}
             )
             logger.info(f"Created collection '{self.frame_collection}'")
+        
+        # Create conversations collection if it doesn't exist
+        if not self.client.collection_exists("conversations"):
+            self.client.create_collection(
+                collection_name="conversations",
+                vectors_config=VectorParams(size=self.vdocument_dim, distance=Distance.COSINE)
+            )
+            logger.info("Created collection 'conversations'")
+        
+        # Create conversation_contexts collection if it doesn't exist
+        if not self.client.collection_exists("conversation_contexts"):
+            self.client.create_collection(
+                collection_name="conversation_contexts",
+                vectors_config=VectorParams(size=self.vdocument_dim, distance=Distance.COSINE)
+            )
+            logger.info("Created collection 'conversation_contexts'")
     
     def upsert(self, ids: List[int], vectors: np.ndarray, payloads: List[Dict], collection_type: str = "document") -> bool:
         """
@@ -110,7 +128,7 @@ class QdrantDB:
         try:
             results = self.client.query_points(
                 collection_name=collection_name,
-                query_vector=query_vector.tolist(),
+                query=query_vector.tolist(),
                 limit=limit
             )
             return [
@@ -145,7 +163,7 @@ class QdrantDB:
         try:
             results = self.client.query_points(
                 collection_name=collection_name,
-                query_vector=query_vector.tolist(),
+                query=query_vector.tolist(),
                 limit=limit
             )
             return [
@@ -171,6 +189,66 @@ class QdrantDB:
             Collection name
         """
         return self.document_collection if collection_type == "document" else self.frame_collection
+    
+    def search_both_collections(self, text_query_vector: np.ndarray, frame_query_vector: np.ndarray, 
+                               limit: int = 10) -> List[Dict]:
+        """
+        Search both text and frame collections simultaneously.
+        Returns combined results sorted by score.
+        
+        Args:
+            text_query_vector: Query embedding for text (BGE-M3, 1024-dim)
+            frame_query_vector: Query embedding for frames (CLIP, 512-dim)
+            limit: Maximum number of results per collection
+            
+        Returns:
+            List of search results from both collections with collection_type metadata
+        """
+        combined_results = []
+        
+        # Normalize text query vector
+        text_query_vector = text_query_vector / np.linalg.norm(text_query_vector)
+        
+        # Search document collection
+        try:
+            doc_results = self.client.query_points(
+                collection_name=self.document_collection,
+                query=text_query_vector.tolist(),
+                limit=limit
+            )
+            for result in doc_results.points:
+                combined_results.append({
+                    "id": result.id,
+                    "score": result.score,
+                    "payload": result.payload,
+                    "collection_type": "document"
+                })
+        except Exception as e:
+            logger.error(f"Error searching document collection: {e}")
+        
+        # Normalize frame query vector
+        frame_query_vector = frame_query_vector / np.linalg.norm(frame_query_vector)
+        
+        # Search frame collection
+        try:
+            frame_results = self.client.query_points(
+                collection_name=self.frame_collection,
+                query=frame_query_vector.tolist(),
+                limit=limit
+            )
+            for result in frame_results.points:
+                combined_results.append({
+                    "id": result.id,
+                    "score": result.score,
+                    "payload": result.payload,
+                    "collection_type": "frame"
+                })
+        except Exception as e:
+            logger.error(f"Error searching frame collection: {e}")
+        
+        # Sort by score descending and limit total results
+        combined_results.sort(key=lambda x: x["score"], reverse=True)
+        return combined_results[:limit * 2]
 
     def search_with_filter(self, query_vector: np.ndarray, 
                           filter_dict: Dict, limit: int = 10, collection_type: str = "document") -> List[Dict]:
@@ -193,7 +271,7 @@ class QdrantDB:
         try:
             results = self.client.query_points(
                 collection_name=collection_name,
-                query_vector=query_vector.tolist(),
+                query=query_vector.tolist(),
                 limit=limit
             )
             

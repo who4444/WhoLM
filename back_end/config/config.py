@@ -15,16 +15,16 @@ class Config:
 
     # CLIP configs
     MAX_IMAGE_SIZE: Tuple[int, int] = (512, 512)
-    CLIP_VECTOR_DIM = 512
-    CLIP_MODEL_NAME = 'ViT-B-16-SigLIP-384'
+    CLIP_VECTOR_DIM = 768
+    CLIP_MODEL_NAME = 'ViT-B-16-SigLIP-512'
     CLIP_PRETRAINED = 'webli'
 
     # Qdrant configs
     QDRANT_URL: str = os.getenv("QDRANT_URL", "http://localhost:6333")
     QDRANT_DOC_COLLECTION: str = "text_documents"  
-    QDRANT_VD_COLLECTION: str = "frame_embeddings"  
+    QDRANT_FRAME_COLLECTION: str = "frame_embeddings"  
     QDRANT_TEXT_EMBEDDING_DIM: int = 1024  
-    QDRANT_IMAGE_EMBEDDING_DIM: int = 512
+    QDRANT_FRAME_EMBEDDING_DIM: int = 768
     
     # RAG configuration
     RAG_BM25_WEIGHT: float = 0.5

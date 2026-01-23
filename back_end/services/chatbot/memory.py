@@ -96,18 +96,8 @@ class ConversationMemory:
         # Initialize PostgreSQL database for memory storage
         self.db = PostgresDB()
 
-        # Keep Qdrant for other vector operations if needed
-        self.conversations_db = QdrantDB(
-            url=qdrant_url,
-            vector_collection="conversations",
-            vector_dim=embedding_dim
-        )
-
-        self.contexts_db = QdrantDB(
-            url=qdrant_url,
-            vector_collection="conversation_contexts",
-            vector_dim=embedding_dim
-        )
+        # Keep single Qdrant instance that handles all collections
+        self.qdrant_db = QdrantDB(url=qdrant_url)
 
         # Short-term memory (in-memory)
         self.short_term_memory: Dict[str, deque] = {}  # session_id -> deque of Messages
@@ -402,6 +392,9 @@ class ConversationMemory:
         try:
             # Create embedding for the message
             embedding = encode_texts([message.content])[0]
+            # Convert to list if it's a numpy array
+            if hasattr(embedding, 'tolist'):
+                embedding = embedding.tolist()
 
             # Store in PostgreSQL
             self.db.insert_message(
@@ -425,7 +418,10 @@ class ConversationMemory:
             if context.user_id:
                 context_text += f" user: {context.user_id}"
 
-            embedding = encode_texts([context_text])[0].tolist()
+            embedding = encode_texts([context_text])[0]
+            # Convert to list if it's a numpy array
+            if hasattr(embedding, 'tolist'):
+                embedding = embedding.tolist()
 
             # Store in PostgreSQL
             self.db.insert_context(

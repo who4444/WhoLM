@@ -69,35 +69,38 @@ class QdrantRAGPipeline:
         self.embedding_dim = embedding_dim
         self.frame_embedding_dim = frame_embedding_dim
     
-    def query(self, query_text: str, retriever_top_k: int = 10, search_frames: bool = False) -> List[Dict]:
+    def query(self, query_text: str, retriever_top_k: int = 10) -> List[Dict]:
         """
-        Execute RAG query: retrieve from Qdrant and rerank.
-        Searches text collection (BGE-M3) or frame collection (CLIP) separately.
+        Execute RAG query: retrieve from both text and frame collections and rerank.
+        Searches text collection (BGE-M3) and frame collection (CLIP) simultaneously.
         
         Args:
             query_text: User query
             retriever_top_k: Number of candidates to retrieve before reranking
-            search_frames: If True, search frame collection with CLIP encoder. If False, search text with BGE-M3
             
         Returns:
-            List of reranked results with scores
+            List of reranked results with scores from both collections
         """
-        logger.info(f"Processing query: {query_text} (search_frames={search_frames})")
+        logger.info(f"Processing unified query: {query_text}")
         
-        if search_frames:
-            # Use CLIP's text encoder for frame embeddings
-            text_tokens = self.clip_tokenizer([query_text])
-            with torch.no_grad():
-                query_embedding = self.clip_model.encode_text(text_tokens)
-            query_embedding = query_embedding.cpu().numpy()[0]
-            results = self.text_db.frame_search(query_embedding, limit=retriever_top_k)
-        else:
-            # Use BGE-M3 encoder for text documents
-            query_embedding = encode_texts([query_text])[0]
-            query_embedding = np.array(query_embedding)
-            results = self.text_db.text_search(query_embedding, limit=retriever_top_k, collection_type="document")
+        # Encode query with BGE-M3 for text documents
+        text_embedding = encode_texts([query_text])[0]
+        text_embedding = np.array(text_embedding)
         
-        if not results:
+        # Encode query with CLIP's text encoder for frame embeddings
+        text_tokens = self.clip_tokenizer([query_text])
+        with torch.no_grad():
+            frame_embedding = self.clip_model.encode_text(text_tokens)
+        frame_embedding = frame_embedding.cpu().numpy()[0]
+        
+        # Search both collections simultaneously
+        all_results = self.text_db.search_both_collections(
+            text_query_vector=text_embedding,
+            frame_query_vector=frame_embedding,
+            limit=retriever_top_k
+        )
+        
+        if not all_results:
             logger.warning("No results found for query")
             return []
         
@@ -108,13 +111,14 @@ class QdrantRAGPipeline:
                 "text": result["payload"].get("text", ""),
                 "metadata": {k: v for k, v in result["payload"].items() 
                            if k not in ["doc_id", "text"]},
-                "score": result["score"]
+                "score": result["score"],
+                "collection_type": result["collection_type"]
             }
-            for result in results
+            for result in all_results
         ]
         
         # Rerank results
-        logger.debug(f"Reranking {len(candidates)} candidates")
+        logger.debug(f"Reranking {len(candidates)} candidates from both collections")
         reranked = self._rerank_results(query_text, candidates)
         
         return reranked
