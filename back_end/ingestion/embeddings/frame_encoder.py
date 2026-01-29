@@ -112,19 +112,36 @@ class FrameEncoder:
         self.clip_model = self.clip_model.to(self.device)
         self.clip_model.eval()
               
-    def process_single_video(self, image_files: List[str]) -> Tuple[List[Dict], Optional[str]]:
-        if not image_files:
-            return [], "No image files provided"
-            
-        # Normalize paths
-        image_files = [str(f) for f in image_files]
-        video_name = Path(image_files[0]).parent.name
+    def process_single_video(self, image_files: List[str]) -> np.ndarray:
+        """Process video frames and return embeddings array aligned with input image files.
         
-        clip_entities = []
+        Args:
+            image_files: List of paths to frame images
+            
+        Returns:
+            np.ndarray: Embeddings array with shape (n_frames, embedding_dim)
+        """
+        if not image_files:
+            logger.warning("No image files provided")
+            return np.array([])
+            
+        # Normalize paths and filter existing files
+        image_files = [str(f) for f in image_files]
+        existing_files = [f for f in image_files if Path(f).exists()]
+        
+        if not existing_files:
+            logger.error(f"No valid image files found. Checked paths: {image_files[:3]}...")
+            return np.array([])
+        
+        if len(existing_files) < len(image_files):
+            logger.warning(f"Only {len(existing_files)}/{len(image_files)} image files exist")
+        
+        video_name = Path(existing_files[0]).parent.name
+        embeddings_list = []
         
         try:
             dataset = FrameDataset(
-                image_files=image_files,
+                image_files=existing_files,
                 preprocess=self.preprocess,
                 fps=Config.VIDEO_KEYFRAME_FPS 
             )
@@ -155,22 +172,19 @@ class FrameEncoder:
                     # Normalize features
                     clip_features /= np.linalg.norm(clip_features, axis=1, keepdims=True)
                 
-                # Process batch results
-                for clip_emb, metadata in zip(clip_features, batch_metadata):
-                    clip_entities.append({
-                        "vector": clip_emb.tolist(),
-                        "video_id": metadata["video_id"],
-                        "frame_num": metadata["frame_num"],
-                        "timestamp": metadata["timestamp"],
-                        "file_path": metadata["file_path"]
-                    })
+                # Collect embeddings
+                for clip_emb in clip_features:
+                    embeddings_list.append(clip_emb)
             
-            return clip_entities, None
+            if embeddings_list:
+                return np.array(embeddings_list, dtype=np.float32)
+            else:
+                logger.error(f"No embeddings generated for video {video_name}")
+                return np.array([])
             
         except Exception as e:
-            error_msg = f"Error processing video {video_name}: {str(e)}"
-            logger.error(error_msg)
+            logger.error(f"Error processing video {video_name}: {str(e)}")
             import traceback
             traceback.print_exc()
-            return [], error_msg
+            return np.array([])
         

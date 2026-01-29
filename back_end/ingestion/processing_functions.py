@@ -41,7 +41,7 @@ def process_video_upload(file_path: str, video_name: str) -> Dict[str, Any]:
 
         # Step 2: Extract frames
         logger.info("Step 2: Extracting video frames...")
-        frames_result = frame_extractor.process_video(file_path, Config.TEMP_DIR)
+        frames_result = frame_extractor.process_video(file_path, Config.DEDUP_THRESHOLD, Config.DEDUP_THRESHOLD)
 
         # Step 3: Generate embeddings and store
         logger.info("Step 3: Generating and storing embeddings...")
@@ -68,9 +68,17 @@ def process_video_upload(file_path: str, video_name: str) -> Dict[str, Any]:
             logger.info("Processing frame embeddings...")
             frame_embeddings = frame_encoder.process_single_video(frames_result)
 
-            # Store frame embeddings to Qdrant
-            ingester.push_frame_embeddings(frames_result, frame_embeddings)
-            logger.info(f"Stored {len(frames_result)} frame embeddings")
+            # Only store if embeddings were generated successfully
+            if len(frame_embeddings) > 0:
+                # Filter to only frames that have embeddings (in case some failed)
+                valid_frames = frames_result[:len(frame_embeddings)]
+                if len(valid_frames) == len(frame_embeddings):
+                    ingester.push_frame_embeddings(valid_frames, frame_embeddings)
+                    logger.info(f"Stored {len(valid_frames)} frame embeddings")
+                else:
+                    logger.warning(f"Skipped frame storage: {len(valid_frames)} frames but {len(frame_embeddings)} embeddings")
+            else:
+                logger.warning(f"No frame embeddings generated for {len(frames_result)} frames")
 
         logger.info(f"Successfully processed video: {video_name}")
 

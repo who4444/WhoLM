@@ -128,5 +128,7 @@ class FrameExtractor:
         # Remove duplicates
         kept_frames = self.remove_dupes(output_dir, dedup_thr, dedup_window)
 
-        return kept_frames
+        # Return full paths instead of just filenames
+        kept_frame_paths = [str(output_dir / frame) for frame in kept_frames]
+        return kept_frame_paths
     

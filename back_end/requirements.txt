@@ -16,7 +16,7 @@ supabase
 uvicorn
 pydantic
 python-dotenv
-stable-ts
+stable-ts[fw]
 PyMuPDF
 python-docx
 langchain-text-splitters

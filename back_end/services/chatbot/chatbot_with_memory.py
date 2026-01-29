@@ -1,5 +1,3 @@
-
-
 import sys
 import os
 # Add the back_end directory to sys.path for absolute imports
@@ -8,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from services.chatbot.memory import ConversationMemory 
 from services.chatbot.gemini_client import generate_response
 from services.chatbot.prompts.document_prompts import doc_prompt
+from services.chatbot.prompts.video_prompts import video_prompt
 from services.rag.qdrant_rag_pipeline import QdrantRAGPipeline
 from typing import Optional, Dict, Any
 from config.config import Config
@@ -45,18 +44,14 @@ class WhoLM:
         self.rag_pipeline = QdrantRAGPipeline(
             qdrant_url=qdrant_url,
             text_collection=Config.QDRANT_DOC_COLLECTION,
-            frame_collection=Config.QDRANT_VD_COLLECTION,
+            frame_collection=Config.QDRANT_FRAME_COLLECTION,
             embedding_dim=Config.QDRANT_TEXT_EMBEDDING_DIM,
-            frame_embedding_dim=Config.QDRANT_IMAGE_EMBEDDING_DIM
+            frame_embedding_dim=Config.QDRANT_FRAME_EMBEDDING_DIM
         )
 
         # System prompts 
         self.system_prompts = {
-            "video": """
-            You are an expert assistant for video content analysis and Q&A.
-            Help users find and understand video content using the provided frames.
-            Be helpful, accurate, and cite your sources when possible.
-            """,
+            "video": video_prompt.template,
             "document": doc_prompt.template,
             "general": """
             You are a helpful AI assistant with access to video and document content.
