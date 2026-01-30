@@ -18,7 +18,7 @@ class QdrantDB:
                  document_collection: str = "text_documents",
                  frame_collection: str = "frame_embeddings",
                  doc_dim: int = 1024,
-                 frame_dim: int = 512,
+                 frame_dim: int = 768,
                  timeout: int = 30):
         """
         Initialize Qdrant client and create collections if needed.

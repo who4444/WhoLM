@@ -162,7 +162,7 @@ class WhoLM:
 
         return {
             "answer": response,
-            "sources": rag_results if rag_results else []
+            "sources": self.rag_pipeline.format_sources(rag_results) if rag_results else []
         }
     def get_conversation_history(self, session_id: str, limit: int = 20) -> list:
         """

@@ -46,6 +46,9 @@ class FrameDataset(Dataset):
             # Parse video_id and frame info from filename
             video_id, frame_num, timestamp = self._parse_filename(Path(img_path).name, video_id)
             
+            # Ensure timestamp is a float for metadata
+            timestamp = float(timestamp)
+            
             metadata = {
                 "video_id": video_id,
                 "frame_num": frame_num,
@@ -57,6 +60,7 @@ class FrameDataset(Dataset):
             
         except Exception as e:
             logger.error(f"Error processing image {img_path}: {e}")
+            # Return None tuple to signal error in collate_fn
             return None, None
     
     def _parse_filename(self, filename: str, fallback_video_name: str) -> tuple:
@@ -73,7 +77,7 @@ class FrameDataset(Dataset):
                 video_id = match.group(1)
                 frame_num = int(match.group(2))
                 # Calculate timestamp based on frame number and FPS
-                timestamp = frame_num / self.fps 
+                timestamp = int(frame_num / self.fps) if self.fps > 0 else 0
                 return video_id, frame_num, timestamp
             else:
                 logger.warning(f"Filename {filename} did not match 'videoid_frame_frame_num' format.")

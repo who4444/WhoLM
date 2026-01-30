@@ -23,7 +23,7 @@ class QdrantRAGPipeline:
                  text_collection: str = "text_documents",
                  frame_collection: str = "frame_embeddings",
                  embedding_dim: int = 1024,
-                 frame_embedding_dim: int = 512,
+                 frame_embedding_dim: int = 768,
                  bm25_weight: float = 0.5,
                  dense_weight: float = 0.5,
                  reranker_top_k: int = 3):
@@ -53,7 +53,7 @@ class QdrantRAGPipeline:
         # Initialize CLIP model for frame encoding
         self.clip_model, _, _ = open_clip.create_model_and_transforms(
             Config.CLIP_MODEL_NAME, 
-            pretrained='openai'
+            pretrained= Config.CLIP_PRETRAINED
         )
         self.clip_tokenizer = open_clip.get_tokenizer(Config.CLIP_MODEL_NAME)
         self.clip_model.eval()
@@ -243,6 +243,87 @@ class QdrantRAGPipeline:
                     break
         
         return reranked_results[:self.reranker_top_k]
+    
+    def format_sources(self, results: List[Dict]) -> List[Dict]:
+        """
+        Format search results for frontend display with readable source information.
+        
+        Args:
+            results: Search results from query()
+            
+        Returns:
+            List of formatted source dictionaries for frontend
+        """
+        formatted_sources = []
+        
+        for result in results:
+            metadata = result.get("metadata", {})
+            modality = metadata.get("modality", "unknown")
+            
+            if modality == "text":
+                source_type = metadata.get("type", "document").upper()
+                
+                # Handle different text types
+                if metadata.get("type") == "transcript":
+                    # Transcript source
+                    video_id = metadata.get("video_id", "Unknown Video")
+                    start_time = metadata.get("start_time", 0)
+                    end_time = metadata.get("end_time", 0)
+                    
+                    # Format timestamp
+                    def format_time(seconds):
+                        mins = int(seconds) // 60
+                        secs = int(seconds) % 60
+                        return f"{mins}:{secs:02d}"
+                    
+                    time_range = f"{format_time(start_time)} - {format_time(end_time)}"
+                    
+                    formatted_sources.append({
+                        "type": "Transcript",
+                        "source": video_id,
+                        "time": time_range,
+                        "content": result.get("text", "")[:200] + "...",
+                        "metadata": metadata
+                    })
+                else:
+                    # Document source
+                    doc_id = metadata.get("doc_id", "Unknown Document")
+                    formatted_sources.append({
+                        "type": "Document",
+                        "source": doc_id,
+                        "content": result.get("text", "")[:200] + "...",
+                        "metadata": metadata
+                    })
+            
+            elif modality == "visual":
+                # Frame source
+                video_id = metadata.get("video_id", "Unknown Video")
+                frame_num = metadata.get("frame_num", 0)
+                timestamp = metadata.get("timestamp", 0)
+                
+                # Format timestamp
+                mins = int(timestamp) // 60
+                secs = int(timestamp) % 60
+                time_str = f"{mins}:{secs:02d}"
+                
+                formatted_sources.append({
+                    "type": "Frame",
+                    "source": f"{video_id} (Frame {frame_num})",
+                    "time": time_str,
+                    "frame_num": frame_num,
+                    "metadata": metadata
+                })
+            
+            else:
+                # Unknown source
+                formatted_sources.append({
+                    "type": "Unknown",
+                    "source": "Unknown Source",
+                    "content": result.get("text", "")[:200] + "...",
+                    "metadata": metadata
+                })
+        
+        return formatted_sources
     
     def get_stats(self) -> Dict:
         """

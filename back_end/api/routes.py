@@ -273,6 +273,18 @@ async def delete_content(content_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/content/{content_id}/status")
+async def get_content_status(content_id: str):
+    """Get processing status for uploaded content"""
+    try:
+        from ingestion.processing_functions import get_processing_status
+        status = get_processing_status(content_id)
+        return status
+    except Exception as e:
+        logger.error(f"Error getting content status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Background processing functions
 def process_supabase_video_background(content_id: str, storage_path: str, video_name: str):
     """Process video from Supabase in background"""
@@ -302,7 +314,7 @@ def process_supabase_video_background(content_id: str, storage_path: str, video_
                 break
 
         # Process the video using the existing pipeline
-        result = process_video_upload(temp_path, video_name)
+        result = process_video_upload(temp_path, video_name, content_id)
 
         # Update status
         for content in uploaded_content:
@@ -358,7 +370,7 @@ def process_supabase_document_background(content_id: str, storage_path: str, doc
                 break
 
         # Process the document using the existing pipeline
-        result = process_document_upload(temp_path, doc_name)
+        result = process_document_upload(temp_path, doc_name, content_id)
 
         # Update status
         for content in uploaded_content:
@@ -432,7 +444,7 @@ def process_youtube_video_background(content_id: str, youtube_url: str):
                 break
 
         # Process the video using the existing pipeline
-        result = process_video_upload(video_path, video_name)
+        result = process_video_upload(video_path, video_name, content_id)
 
         # Update status
         for content in uploaded_content:

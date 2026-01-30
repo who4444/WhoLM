@@ -136,19 +136,30 @@ class VectorIngester:
         # Prepare payloads
         payloads = []
         for i, chunk in enumerate(transcript_chunks):
-            payload = {
-                "modality": "text",
-                "type": "transcript",
-                "video_id": video_id,
-                "text": chunk["text"],
-                "start_time": chunk.get("start", 0),
-                "end_time": chunk.get("end", 0),
-                "duration": chunk.get("end", 0) - chunk.get("start", 0),
-                "text_length": len(chunk["text"]),
-                "chunk_index": i,
-                "doc_id": self._generate_doc_id(f"{video_id}_{i}", chunk["text"])
-            }
-            payloads.append(payload)
+            try:
+                if not isinstance(chunk, dict):
+                    raise TypeError(f"Chunk {i} is not a dict: {type(chunk)}")
+                
+                if "text" not in chunk:
+                    raise KeyError(f"Chunk {i} missing 'text' key. Keys: {chunk.keys()}")
+                
+                payload = {
+                    "modality": "text",
+                    "type": "transcript",
+                    "video_id": video_id,
+                    "text": chunk["text"],
+                    "start_time": chunk.get("start", 0),
+                    "end_time": chunk.get("end", 0),
+                    "duration": chunk.get("end", 0) - chunk.get("start", 0),
+                    "text_length": len(chunk["text"]),
+                    "chunk_index": i,
+                    "doc_id": self._generate_doc_id(f"{video_id}_{i}", chunk["text"])
+                }
+                payloads.append(payload)
+            except Exception as e:
+                logger.error(f"Error processing chunk {i}: {e}")
+                logger.error(f"Chunk content: {chunk}")
+                raise
 
         # Generate unique IDs
         ids = [self._generate_point_id(payload["doc_id"]) for payload in payloads]
@@ -359,7 +370,7 @@ class VectorIngester:
         """
         # Default values
         info = {
-            "video_name": frame_path.parent.name,
+            "video_id": frame_path.parent.name,
             "frame_num": 0,
             "timestamp": 0.0
         }

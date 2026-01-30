@@ -65,6 +65,10 @@ class FrameExtractor:
         Raises:
             RuntimeError: If image processing fails
         """
+        # Ensure threshold and window are integers
+        threshold = int(threshold)
+        window = int(window)
+        
         output_dir = Path(output_dir)
         img_files = sorted([f for f in os.listdir(output_dir) if f.lower().endswith((".jpg", ".jpeg"))])
         last_hashes = []

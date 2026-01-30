@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Dict, Any, List
 import tempfile
 import numpy as np
+from datetime import datetime
+from threading import Lock
 
 from ingestion.vector_ingester import VectorIngester
 from ingestion.processing.video_processing.audio_processor import AudioProcessor
@@ -15,19 +17,65 @@ from config.config import Config
 
 logger = logging.getLogger(__name__)
 
-def process_video_upload(file_path: str, video_name: str) -> Dict[str, Any]:
+# Global status tracking (thread-safe)
+_processing_status = {}
+_status_lock = Lock()
+
+
+def update_status(content_id: str, status: str, details: Dict[str, Any] = None):
+    """Update processing status for content.
+    
+    Args:
+        content_id: ID of the content being processed
+        status: Current status (e.g., 'pending', 'processing', 'completed', 'failed')
+        details: Optional dict with additional status details
+    """
+    with _status_lock:
+        if content_id not in _processing_status:
+            _processing_status[content_id] = {
+                "content_id": content_id,
+                "status": status,
+                "start_time": datetime.now().isoformat(),
+                "details": {}
+            }
+        else:
+            _processing_status[content_id]["status"] = status
+            _processing_status[content_id]["updated_time"] = datetime.now().isoformat()
+        
+        if details:
+            _processing_status[content_id]["details"].update(details)
+        
+        logger.debug(f"Status updated for {content_id}: {status}")
+
+
+def get_status(content_id: str) -> Dict[str, Any]:
+    """Get processing status for content.
+    
+    Args:
+        content_id: ID of the content
+        
+    Returns:
+        Status dict or None if not found
+    """
+    with _status_lock:
+        return _processing_status.get(content_id)
+
+def process_video_upload(file_path: str, video_name: str, content_id: str = None) -> Dict[str, Any]:
     """
     Process an uploaded video file: extract audio & frames → encode embeddings → store in Qdrant.
 
     Args:
         file_path: Path to the uploaded video file
         video_name: Name of the video
+        content_id: Optional ID for status tracking
 
     Returns:
         Dict with processing results
     """
     try:
         logger.info(f"Processing video: {video_name}")
+        if content_id:
+            update_status(content_id, "processing", {"stage": "initialization"})
 
         # Initialize processing components
         ingester = VectorIngester()
@@ -37,18 +85,30 @@ def process_video_upload(file_path: str, video_name: str) -> Dict[str, Any]:
 
         # Step 1: Extract audio and transcribe
         logger.info("Step 1: Extracting audio and transcribing...")
+        if content_id:
+            update_status(content_id, "processing", {"stage": "transcribing"})
         transcript_result = audio_processor.process_audio(file_path, Config.TEMP_DIR)
 
         # Step 2: Extract frames
         logger.info("Step 2: Extracting video frames...")
+        if content_id:
+            update_status(content_id, "processing", {"stage": "extracting_frames"})
         frames_result = frame_extractor.process_video(file_path, Config.DEDUP_THRESHOLD, Config.DEDUP_THRESHOLD)
 
         # Step 3: Generate embeddings and store
         logger.info("Step 3: Generating and storing embeddings...")
+        if content_id:
+            update_status(content_id, "processing", {"stage": "generating_embeddings"})
 
         # Transcript embeddings: encode → store in Qdrant
         if transcript_result:
             logger.info("Processing transcript embeddings...")
+            # Validate transcript structure
+            for i, chunk in enumerate(transcript_result):
+                if not isinstance(chunk, dict) or "text" not in chunk:
+                    logger.error(f"Invalid transcript chunk at index {i}: {chunk}")
+                    raise ValueError(f"Transcript chunk {i} missing 'text' key")
+            
             transcript_texts = [chunk["text"] for chunk in transcript_result]
             
             # Encode transcript texts
@@ -81,6 +141,11 @@ def process_video_upload(file_path: str, video_name: str) -> Dict[str, Any]:
                 logger.warning(f"No frame embeddings generated for {len(frames_result)} frames")
 
         logger.info(f"Successfully processed video: {video_name}")
+        if content_id:
+            update_status(content_id, "completed", {
+                "transcript_chunks": len(transcript_result) if transcript_result else 0,
+                "frames_extracted": len(frames_result) if frames_result else 0
+            })
 
         return {
             "success": True,
@@ -92,21 +157,28 @@ def process_video_upload(file_path: str, video_name: str) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Error processing video {video_name}: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        if content_id:
+            update_status(content_id, "failed", {"error": str(e)})
         return {"success": False, "error": str(e)}
 
-def process_document_upload(file_path: str, doc_name: str) -> Dict[str, Any]:
+def process_document_upload(file_path: str, doc_name: str, content_id: str = None) -> Dict[str, Any]:
     """
     Process an uploaded document file: extract text → encode embeddings → store in Qdrant.
 
     Args:
         file_path: Path to the uploaded document file
         doc_name: Name of the document
+        content_id: Optional ID for status tracking
 
     Returns:
         Dict with processing results
     """
     try:
         logger.info(f"Processing document: {doc_name}")
+        if content_id:
+            update_status(content_id, "processing", {"stage": "initialization"})
 
         # Initialize components
         ingester = VectorIngester()
@@ -114,26 +186,32 @@ def process_document_upload(file_path: str, doc_name: str) -> Dict[str, Any]:
 
         # Step 1: Document Processing - Extract text from document
         logger.info("Step 1: Processing document content...")
+        if content_id:
+            update_status(content_id, "processing", {"stage": "extracting_text"})
         doc_result = doc_processor.process_file(file_path)
 
         if not doc_result.get("success"):
-            return {"success": False, "error": "Failed to process document"}
+            raise ValueError("Failed to process document")
 
         text_chunks = doc_result.get("text_chunks", [])
 
         if not text_chunks:
-            return {"success": False, "error": "No text content found in document"}
+            raise ValueError("No text content found in document")
 
         logger.info(f"Extracted {len(text_chunks)} text chunks from document")
 
         # Step 2: Text Encoding - Generate embeddings for text chunks
         logger.info("Step 2: Generating text embeddings...")
+        if content_id:
+            update_status(content_id, "processing", {"stage": "generating_embeddings"})
         embeddings = encode_texts(text_chunks)
         embeddings_array = np.array(embeddings)
         logger.info(f"Generated embeddings with shape: {embeddings_array.shape}")
 
         # Step 3: Vector Storage - Push embeddings to Qdrant
         logger.info("Step 3: Storing embeddings in Qdrant...")
+        if content_id:
+            update_status(content_id, "processing", {"stage": "storing_vectors"})
         ingest_result = ingester.push_document_embeddings(
             doc_id=doc_name,
             text_chunks=text_chunks,
@@ -142,10 +220,15 @@ def process_document_upload(file_path: str, doc_name: str) -> Dict[str, Any]:
         )
 
         if not ingest_result:
-            return {"success": False, "error": "Failed to store embeddings in Qdrant"}
+            raise ValueError("Failed to store embeddings in Qdrant")
 
         logger.info(f"Successfully processed and stored document: {doc_name}")
         logger.debug(f"Ingestion result: {ingest_result}")
+        if content_id:
+            update_status(content_id, "completed", {
+                "text_chunks": len(text_chunks),
+                "embeddings_stored": ingest_result.get("successful_batches", 0) * ingest_result.get("batch_size", 0)
+            })
 
         return {
             "success": True,
@@ -157,6 +240,10 @@ def process_document_upload(file_path: str, doc_name: str) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Error processing document {doc_name}: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        if content_id:
+            update_status(content_id, "failed", {"error": str(e)})
         return {"success": False, "error": str(e)}
 
 def get_processing_status(content_id: str) -> Dict[str, Any]:
@@ -169,10 +256,13 @@ def get_processing_status(content_id: str) -> Dict[str, Any]:
     Returns:
         Dict with status information
     """
-    # This would typically query a database
-    # For now, return a placeholder
-    return {
-        "content_id": content_id,
-        "status": "unknown",
-        "message": "Status tracking not implemented yet"
-    }
+    status = get_status(content_id)
+    
+    if status is None:
+        return {
+            "content_id": content_id,
+            "status": "unknown",
+            "message": "Content not found or processing not started"
+        }
+    
+    return status

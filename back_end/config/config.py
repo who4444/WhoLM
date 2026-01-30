@@ -8,6 +8,8 @@ class Config:
     # Processing:
     BATCH_SIZE = 64
     WORKER_NUM = 4
+    DEDUP_THRESHOLD = 5  # Hamming distance threshold for duplicate detection
+    DEDUP_WINDOW = 10   # Number of recent hashes to compare against
 
     # Paths
     KEYFRAMES_DIR: str = ""
