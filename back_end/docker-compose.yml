@@ -1,6 +1,9 @@
+version: '3.8'
+
 services:
   db:
     image: postgres:15
+    container_name: video_qa_db
     environment:
       POSTGRES_USER: video_qa_user
       POSTGRES_PASSWORD: secure_password
@@ -9,13 +12,64 @@ services:
       - db_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
-    volumes:
-      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U video_qa_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - video_qa_network
+
   qdrant:
     image: qdrant/qdrant:v1.2.0
+    container_name: video_qa_qdrant
     ports:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
+    networks:
+      - video_qa_network
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: video_qa_backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://video_qa_user:secure_password@db:5432/video_qa_db
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - ./:/app
+    networks:
+      - video_qa_network
+
+  frontend:
+    build:
+      context: ../front_end
+      dockerfile: Dockerfile
+    container_name: video_qa_frontend
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    environment:
+      BACKEND_URL: http://backend:8000
+    networks:
+      - video_qa_network
+
+volumes:
+  db_data:
+  qdrant_data:
+
+networks:
+  video_qa_network:
+    driver: bridge
     
