@@ -1,7 +1,17 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Union
 from logging import getLogger
 
 logger = getLogger(__name__)
+
+
+class PayloadWrapper:
+    """Wrapper to make dict payloads compatible with hit.payload access."""
+    def __init__(self, data: Dict[str, Any]):
+        self.payload = data
+    
+    @property
+    def score(self) -> float:
+        return self.payload.get("score", 0.0)
 
 
 def _format_timestamp(seconds: float) -> str:
@@ -211,3 +221,83 @@ def _format_frame_hit(payload: Dict[str, Any], index: int, hit: Any, include_sco
     header += _get_score_str(hit, include_score)
     
     return f"{header}:\n{frame_path}"
+
+
+def convert_rag_results_to_hits(results: List[Dict[str, Any]]) -> List[Any]:
+    """
+    Convert RAG pipeline results (dicts) to hit-like objects compatible with context builders.
+    
+    Args:
+        results: List of result dicts from rag_pipeline.query()
+        
+    Returns:
+        List of hit-like objects with payload attributes
+    """
+    hits = []
+    for result in results:
+        # Create a wrapper object that has .payload and .score attributes
+        wrapper = PayloadWrapper(result.get("metadata", {}))
+        # Add text and collection info to payload
+        wrapper.payload["text"] = result.get("text", "")
+        wrapper.payload["collection_type"] = result.get("collection_type", "")
+        wrapper.payload["doc_id"] = result.get("doc_id", "")
+        wrapper.payload["score"] = result.get("score", 0.0)
+        wrapper.score = result.get("score", 0.0)
+        hits.append(wrapper)
+    
+    return hits
+
+
+def build_rag_context(results: List[Dict[str, Any]], include_score: bool = True) -> str:
+    """
+    Build formatted context from RAG pipeline results.
+    Intelligently handles mixed modality results from rag_pipeline.query().
+    
+    Args:
+        results: List of result dicts from rag_pipeline.query()
+        include_score: Whether to include retrieval scores
+        
+    Returns:
+        Formatted context string for chatbot prompt
+    """
+    if not results:
+        logger.warning("No RAG results provided")
+        return ""
+    
+    # Convert dicts to hit-like objects
+    hits = convert_rag_results_to_hits(results)
+    
+    # Use hybrid context builder to handle mixed modalities
+    return build_hybrid_context(hits, include_score=include_score)
+
+
+def extract_citations_from_context(context: str) -> List[Dict[str, str]]:
+    """
+    Extract structured citations from formatted context string.
+    Parses the formatted context output and creates citation references.
+    
+    Args:
+        context: Formatted context string from build_rag_context
+        
+    Returns:
+        List of citation dictionaries with source info
+    """
+    citations = []
+    
+    # Split context by separator
+    sections = context.split("\n\n---\n\n")
+    
+    for i, section in enumerate(sections, 1):
+        lines = section.strip().split("\n", 1)
+        if len(lines) >= 1:
+            header = lines[i]
+            content = lines[1] if len(lines) > 1 else ""
+            
+            citation = {
+                "id": i,
+                "header": header,
+                "content": content[:100] + "..." if len(content) > 100 else content
+            }
+            citations.append(citation)
+    
+    return citations

@@ -12,6 +12,7 @@ class ChatResponse(BaseModel):
     success: bool
     answer: Optional[str] = None
     sources: Optional[List[Dict[str, Any]]] = []
+    context_used: Optional[str] = None
     session_id: Optional[str] = None
     error: Optional[str] = None
 

@@ -8,6 +8,7 @@ from services.chatbot.gemini_client import generate_response
 from services.chatbot.prompts.document_prompts import doc_prompt
 from services.chatbot.prompts.video_prompts import video_prompt
 from services.rag.qdrant_rag_pipeline import QdrantRAGPipeline
+from services.rag.context_builder import build_rag_context
 from typing import Optional, Dict, Any
 from config.config import Config
 
@@ -125,26 +126,16 @@ class WhoLM:
             # Query the RAG pipeline
             rag_results = self.rag_pipeline.query(enhanced_query)
 
-            # Format context from RAG results
+            # Build formatted context from RAG results using context builder
             if rag_results:
-                context_parts = []
-                for i, result in enumerate(rag_results[:5]):  # Top 5 results
-                    modality = result.get("metadata", {}).get("modality", "text")
-                    if modality == "frame":
-                        # Handle frame results
-                        frame_info = f"Frame from video '{result.get('metadata', {}).get('video_name', 'unknown')}' at {result.get('metadata', {}).get('timestamp', 0)}s"
-                        context_parts.append(f"[Source {i+1}] {frame_info}")
-                    else:
-                        # Handle text results
-                        text_content = result.get('text', '')
-                        context_parts.append(f"[Source {i+1}] {text_content}")
-                context_str = "\n\n".join(context_parts)
+                context_str = build_rag_context(rag_results, include_score=True)
             else:
                 context_str = "No relevant content found in the database."
 
         except Exception as e:
             print(f"RAG query failed: {e}")
             context_str = "Unable to retrieve relevant content at this time."
+            rag_results = []
 
         # Generate response using Gemini
         try:
@@ -160,9 +151,13 @@ class WhoLM:
         # Add assistant response to memory
         self.memory.add_message(session_id, "assistant", response)
 
+        # Format sources for frontend citation display
+        formatted_sources = self.rag_pipeline.format_sources(rag_results) if rag_results else []
+
         return {
             "answer": response,
-            "sources": self.rag_pipeline.format_sources(rag_results) if rag_results else []
+            "sources": formatted_sources,
+            "context_used": context_str if context_str != "No relevant content found in the database." else None
         }
     def get_conversation_history(self, session_id: str, limit: int = 20) -> list:
         """

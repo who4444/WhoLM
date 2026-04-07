@@ -26,7 +26,7 @@ class QdrantRAGPipeline:
                  frame_embedding_dim: int = 768,
                  bm25_weight: float = 0.5,
                  dense_weight: float = 0.5,
-                 reranker_top_k: int = 3):
+                 reranker_top_k: int = 5):
         """
         Initialize RAG pipeline for querying.
         

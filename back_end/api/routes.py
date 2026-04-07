@@ -185,6 +185,7 @@ async def chat(request: ChatRequest):
             success=True,
             answer=response.get("answer", "No answer provided"),
             sources=response.get("sources", []),
+            context_used=response.get("context_used"),
             session_id=session_id
         )
 
