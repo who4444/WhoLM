@@ -60,7 +60,8 @@ def get_status(content_id: str) -> Dict[str, Any]:
     with _status_lock:
         return _processing_status.get(content_id)
 
-def process_video_upload(file_path: str, video_name: str, content_id: str = None) -> Dict[str, Any]:
+def process_video_upload(file_path: str, video_name: str, content_id: str = None,
+                         rag_pipeline=None) -> Dict[str, Any]:
     """
     Process an uploaded video file: extract audio & frames → encode embeddings → store in Qdrant.
 
@@ -68,6 +69,7 @@ def process_video_upload(file_path: str, video_name: str, content_id: str = None
         file_path: Path to the uploaded video file
         video_name: Name of the video
         content_id: Optional ID for status tracking
+        rag_pipeline: Optional QdrantRAGPipeline for BM25 indexing
 
     Returns:
         Dict with processing results
@@ -122,6 +124,17 @@ def process_video_upload(file_path: str, video_name: str, content_id: str = None
                 embeddings=transcript_embeddings_array
             )
             logger.info(f"Stored {len(transcript_texts)} transcript chunks")
+
+            # Index into BM25 for hybrid retrieval
+            if rag_pipeline is not None:
+                doc_ids = [f"doc_{video_name}_{i}" for i in range(len(transcript_texts))]
+                metadata_list = [
+                    {"type": "transcript", "video_id": video_name,
+                     "start_time": chunk.get("start", 0), "end_time": chunk.get("end", 0)}
+                    for chunk in transcript_result
+                ]
+                rag_pipeline.add_to_bm25_index(transcript_texts, doc_ids, metadata_list)
+                logger.info(f"Indexed {len(transcript_texts)} transcript chunks into BM25")
             
         # Frame embeddings: encode → store in Qdrant
         if frames_result:
@@ -163,7 +176,8 @@ def process_video_upload(file_path: str, video_name: str, content_id: str = None
             update_status(content_id, "failed", {"error": str(e)})
         return {"success": False, "error": str(e)}
 
-def process_document_upload(file_path: str, doc_name: str, content_id: str = None) -> Dict[str, Any]:
+def process_document_upload(file_path: str, doc_name: str, content_id: str = None,
+                            rag_pipeline=None) -> Dict[str, Any]:
     """
     Process an uploaded document file: extract text → encode embeddings → store in Qdrant.
 
@@ -171,6 +185,7 @@ def process_document_upload(file_path: str, doc_name: str, content_id: str = Non
         file_path: Path to the uploaded document file
         doc_name: Name of the document
         content_id: Optional ID for status tracking
+        rag_pipeline: Optional QdrantRAGPipeline for BM25 indexing
 
     Returns:
         Dict with processing results
@@ -221,6 +236,16 @@ def process_document_upload(file_path: str, doc_name: str, content_id: str = Non
 
         if not ingest_result:
             raise ValueError("Failed to store embeddings in Qdrant")
+
+        # Index into BM25 for hybrid retrieval
+        if rag_pipeline is not None:
+            doc_ids = [f"doc_{doc_name}_{i}" for i in range(len(text_chunks))]
+            metadata_list = [
+                {"type": "document", "doc_name": doc_name, "chunk_index": i}
+                for i in range(len(text_chunks))
+            ]
+            rag_pipeline.add_to_bm25_index(text_chunks, doc_ids, metadata_list)
+            logger.info(f"Indexed {len(text_chunks)} document chunks into BM25")
 
         logger.info(f"Successfully processed and stored document: {doc_name}")
         logger.debug(f"Ingestion result: {ingest_result}")

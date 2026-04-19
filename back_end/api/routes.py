@@ -14,6 +14,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Background
 from .models import ChatRequest, ChatResponse, UploadResponse, YouTubeUploadRequest, SupabaseUploadRequest, ProcessRequest
 from services.chatbot.chatbot_with_memory import WhoLM
 from ingestion.processing_functions import process_video_upload, process_document_upload
+from database.postgres import PostgresDB
 from config.config import Config
 
 logger = logging.getLogger(__name__)
@@ -24,8 +25,13 @@ chatbot = WhoLM(qdrant_url=Config.QDRANT_URL)
 # Initialize Supabase client
 supabase: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
 
-# In-memory storage for uploaded content (in production, use a database)
-uploaded_content = []
+# Initialize Postgres for persistent content tracking
+try:
+    content_db = PostgresDB()
+    logger.info("PostgresDB initialized for content tracking")
+except Exception as e:
+    logger.warning(f"PostgresDB not available, content tracking will be limited: {e}")
+    content_db = None
 
 @router.get("/")
 async def root():
@@ -64,16 +70,15 @@ async def get_upload_url(request: SupabaseUploadRequest):
             object_key  
         )
 
-        # Store upload metadata
-        upload_metadata = {
-            "content_id": content_id,
-            "filename": request.filename,
-            "content_type": content_type,
-            "storage_path": object_key,
-            "upload_time": datetime.now().isoformat(),
-            "status": "pending_upload"
-        }
-        uploaded_content.append(upload_metadata)
+        # Store upload metadata in database
+        if content_db:
+            content_db.insert_content(
+                content_id=content_id,
+                name=request.filename,
+                content_type=content_type,
+                storage_path=object_key,
+                status="pending_upload"
+            )
 
         return {
             "upload_url": signed_url["signedUrl"],
@@ -91,37 +96,25 @@ async def get_upload_url(request: SupabaseUploadRequest):
 async def process_uploaded_file(request: ProcessRequest, background_tasks: BackgroundTasks):
     """Process a file that has been uploaded to Supabase"""
     try:
-        # Find the upload metadata
+        # Look up upload metadata from database
         upload_metadata = None
-        for content in uploaded_content:
-            if content.get("content_id") == request.content_id:
-                upload_metadata = content
-                break
+        if content_db:
+            upload_metadata = content_db.get_content_by_id(request.content_id)
 
         if not upload_metadata:
             raise HTTPException(status_code=404, detail="Upload not found")
 
-        # Update status
-        upload_metadata["status"] = "processing"
-        upload_metadata["name"] = request.name
-
-        # Create content info for tracking
-        content_info = {
-            "id": request.content_id,
-            "name": request.name,
-            "type": upload_metadata["content_type"],
-            "storage_path": upload_metadata["storage_path"],
-            "upload_time": upload_metadata["upload_time"],
-            "status": "processing"
-        }
-        # Add to uploaded content list for frontend display
-        uploaded_content.append(content_info)
+        # Update status in database
+        if content_db:
+            content_db.update_content_status(request.content_id, "processing")
 
         # Process in background
-        if upload_metadata["content_type"] == "video":
-            background_tasks.add_task(process_supabase_video_background, request.content_id, upload_metadata["storage_path"], request.name)
+        upload_type = upload_metadata.get("content_type", "")
+        storage_path = upload_metadata.get("storage_path", "")
+        if upload_type == "video":
+            background_tasks.add_task(process_supabase_video_background, request.content_id, storage_path, request.name, chatbot.rag_pipeline)
         else:
-            background_tasks.add_task(process_supabase_document_background, request.content_id, upload_metadata["storage_path"], request.name)
+            background_tasks.add_task(process_supabase_document_background, request.content_id, storage_path, request.name, chatbot.rag_pipeline)
 
         return UploadResponse(
             success=True,
@@ -146,19 +139,19 @@ async def upload_youtube_video(
         # Generate content ID
         content_id = str(uuid.uuid4())
 
-        # Add to uploaded content list
-        content_info = {
-            "id": content_id,
-            "name": f"YouTube Video ({youtube_url.split('v=')[-1][:11]})",
-            "type": "youtube_video",
-            "youtube_url": youtube_url,
-            "upload_time": datetime.now().isoformat(),
-            "status": "processing"
-        }
-        uploaded_content.append(content_info)
+        # Persist content record to database
+        video_display_name = f"YouTube Video ({youtube_url.split('v=')[-1][:11]})"
+        if content_db:
+            content_db.insert_content(
+                content_id=content_id,
+                name=video_display_name,
+                content_type="youtube_video",
+                youtube_url=youtube_url,
+                status="processing"
+            )
 
         # Process YouTube video in background
-        background_tasks.add_task(process_youtube_video_background, content_id, youtube_url)
+        background_tasks.add_task(process_youtube_video_background, content_id, youtube_url, chatbot.rag_pipeline)
 
         return UploadResponse(
             success=True,
@@ -175,11 +168,16 @@ async def upload_youtube_video(
 async def chat(request: ChatRequest):
     """Handle chat questions"""
     try:
+        import asyncio
+
         # Generate session ID if not provided
         session_id = request.session_id or str(uuid.uuid4())
 
-        # Ask the chatbot
-        response = chatbot.chat(session_id=session_id, user_input=request.question)
+        # Offload synchronous chatbot.chat() to thread pool to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, lambda: chatbot.chat(session_id=session_id, user_input=request.question)
+        )
 
         return ChatResponse(
             success=True,
@@ -236,9 +234,25 @@ async def get_sessions():
 
 @router.get("/content")
 async def get_uploaded_content():
-    """Get list of uploaded content"""
+    """Get list of uploaded content from database"""
     try:
-        return uploaded_content
+        if content_db:
+            rows = content_db.get_all_content()
+            # Convert to frontend-compatible format
+            result = []
+            for row in rows:
+                result.append({
+                    "id": row["content_id"],
+                    "content_id": row["content_id"],
+                    "name": row["name"],
+                    "type": row["content_type"],
+                    "youtube_url": row.get("youtube_url"),
+                    "upload_time": row["upload_time"].isoformat() if row.get("upload_time") else None,
+                    "status": row["status"],
+                    "error": row.get("error"),
+                })
+            return result
+        return []
     except Exception as e:
         logger.error(f"Error getting content list: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -246,29 +260,17 @@ async def get_uploaded_content():
 
 @router.delete("/content/{content_id}")
 async def delete_content(content_id: str):
-    """Delete uploaded content"""
+    """Delete uploaded content from database"""
     try:
-        global uploaded_content
-        content_to_delete = None
+        if content_db:
+            deleted = content_db.delete_content(content_id)
+            if not deleted:
+                raise HTTPException(status_code=404, detail="Content not found")
+            return {"success": True, "message": "Content deleted successfully"}
+        raise HTTPException(status_code=404, detail="Content not found")
 
-        for content in uploaded_content:
-            if content.get("id") == content_id or content.get("content_id") == content_id:
-                content_to_delete = content
-                break
-
-        if not content_to_delete:
-            raise HTTPException(status_code=404, detail="Content not found")
-
-        # Remove from list
-        uploaded_content = [c for c in uploaded_content if c.get("id") != content_id and c.get("content_id") != content_id]
-
-        # Clean up file if it exists
-        file_path = content_to_delete.get("file_path")
-        if file_path and os.path.exists(file_path):
-            os.unlink(file_path)
-
-        return {"success": True, "message": "Content deleted successfully"}
-
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting content: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -276,8 +278,13 @@ async def delete_content(content_id: str):
 
 @router.get("/content/{content_id}/status")
 async def get_content_status(content_id: str):
-    """Get processing status for uploaded content"""
+    """Get processing status for uploaded content from database"""
     try:
+        if content_db:
+            record = content_db.get_content_by_id(content_id)
+            if record:
+                return {"status": record["status"], "error": record.get("error")}
+        # Fallback to in-memory status
         from ingestion.processing_functions import get_processing_status
         status = get_processing_status(content_id)
         return status
@@ -286,18 +293,52 @@ async def get_content_status(content_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/admin/rebuild-bm25")
+async def rebuild_bm25_index():
+    """Rebuild the BM25 index from existing Qdrant data."""
+    try:
+        result = chatbot.rag_pipeline.rebuild_bm25_from_qdrant()
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": f"BM25 index rebuilt with {result['documents_indexed']} documents",
+                "details": result
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
+    except Exception as e:
+        logger.error(f"Error rebuilding BM25 index: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/admin/rag-stats")
+async def get_rag_stats():
+    """Get RAG pipeline statistics including BM25 index status."""
+    try:
+        return chatbot.rag_pipeline.get_stats()
+    except Exception as e:
+        logger.error(f"Error getting RAG stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Helper to update content status in database
+def _update_content_db_status(content_id: str, status: str, error: str = None, result: dict = None):
+    """Update content status in Postgres. Silently skips if DB unavailable."""
+    if content_db:
+        try:
+            content_db.update_content_status(content_id, status, error=error, processing_result=result)
+        except Exception as e:
+            logger.warning(f"Failed to update content status in DB: {e}")
+
+
 # Background processing functions
-def process_supabase_video_background(content_id: str, storage_path: str, video_name: str):
+def process_supabase_video_background(content_id: str, storage_path: str, video_name: str,
+                                       rag_pipeline=None):
     """Process video from Supabase in background"""
     temp_path = None
     try:
         logger.info(f"Starting background processing for Supabase video: {video_name}")
-
-        # Update status
-        for content in uploaded_content:
-            if content.get("id") == content_id or content.get("content_id") == content_id:
-                content["status"] = "downloading"
-                break
+        _update_content_db_status(content_id, "downloading")
 
         # Download file from Supabase to temporary location
         temp_file = tempfile.NamedTemporaryFile(suffix=Path(storage_path).suffix, delete=False)
@@ -308,52 +349,34 @@ def process_supabase_video_background(content_id: str, storage_path: str, video_
         with open(temp_path, 'wb') as f:
             f.write(response)
 
-        # Update status
-        for content in uploaded_content:
-            if content.get("id") == content_id or content.get("content_id") == content_id:
-                content["status"] = "processing"
-                break
+        _update_content_db_status(content_id, "processing")
 
         # Process the video using the existing pipeline
-        result = process_video_upload(temp_path, video_name, content_id)
+        result = process_video_upload(temp_path, video_name, content_id, rag_pipeline=rag_pipeline)
 
-        # Update status
-        for content in uploaded_content:
-            if content.get("id") == content_id or content.get("content_id") == content_id:
-                if result.get("success"):
-                    content["status"] = "completed"
-                    content["processing_result"] = result
-                else:
-                    content["status"] = "failed"
-                    content["error"] = result.get("error", "Unknown error")
-                break
+        if result.get("success"):
+            _update_content_db_status(content_id, "completed", result=result)
+        else:
+            _update_content_db_status(content_id, "failed", error=result.get("error", "Unknown error"))
 
         logger.info(f"Completed background processing for Supabase video: {video_name}")
 
     except Exception as e:
-        logger.error(f"Error in background S3 video processing: {str(e)}")
-        # Update status to failed
-        for content in uploaded_content:
-            if content.get("id") == content_id or content.get("content_id") == content_id:
-                content["status"] = "failed"
-                content["error"] = str(e)
-                break
+        logger.error(f"Error in background video processing: {str(e)}")
+        _update_content_db_status(content_id, "failed", error=str(e))
     finally:
         # Clean up temporary file
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)
 
 
-def process_supabase_document_background(content_id: str, storage_path: str, doc_name: str):
+def process_supabase_document_background(content_id: str, storage_path: str, doc_name: str,
+                                          rag_pipeline=None):
     """Process document from Supabase in background"""
+    temp_path = None
     try:
         logger.info(f"Starting background processing for Supabase document: {doc_name}")
-
-        # Update status
-        for content in uploaded_content:
-            if content.get("id") == content_id or content.get("content_id") == content_id:
-                content["status"] = "downloading"
-                break
+        _update_content_db_status(content_id, "downloading")
 
         # Download file from Supabase to temporary location
         tmp_dir = Config.TEMP_DIR
@@ -364,52 +387,32 @@ def process_supabase_document_background(content_id: str, storage_path: str, doc
         with open(temp_path, 'wb') as f:
             f.write(response)
 
-        # Update status
-        for content in uploaded_content:
-            if content.get("id") == content_id or content.get("content_id") == content_id:
-                content["status"] = "processing"
-                break
+        _update_content_db_status(content_id, "processing")
 
         # Process the document using the existing pipeline
-        result = process_document_upload(temp_path, doc_name, content_id)
+        result = process_document_upload(temp_path, doc_name, content_id, rag_pipeline=rag_pipeline)
 
-        # Update status
-        for content in uploaded_content:
-            if content.get("id") == content_id or content.get("content_id") == content_id:
-                if result.get("success"):
-                    content["status"] = "completed"
-                    content["processing_result"] = result
-                else:
-                    content["status"] = "failed"
-                    content["error"] = result.get("error", "Unknown error")
-                break
+        if result.get("success"):
+            _update_content_db_status(content_id, "completed", result=result)
+        else:
+            _update_content_db_status(content_id, "failed", error=result.get("error", "Unknown error"))
 
         logger.info(f"Completed background processing for Supabase document: {doc_name}")
 
     except Exception as e:
         logger.error(f"Error in background Supabase document processing: {str(e)}")
-        # Update status to failed
-        for content in uploaded_content:
-            if content.get("id") == content_id or content.get("content_id") == content_id:
-                content["status"] = "failed"
-                content["error"] = str(e)
-                break
+        _update_content_db_status(content_id, "failed", error=str(e))
     finally:
         # Clean up temporary file
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)
 
 
-def process_youtube_video_background(content_id: str, youtube_url: str):
+def process_youtube_video_background(content_id: str, youtube_url: str, rag_pipeline=None):
     """Process YouTube video in background"""
     try:
         logger.info(f"Starting background processing for YouTube video: {youtube_url}")
-
-        # Update status
-        for content in uploaded_content:
-            if content.get("id") == content_id:
-                content["status"] = "downloading"
-                break
+        _update_content_db_status(content_id, "downloading")
 
         # Extract video ID from URL
         import re
@@ -437,26 +440,15 @@ def process_youtube_video_background(content_id: str, youtube_url: str):
         if result.returncode != 0:
             raise Exception(f"Failed to download video: {result.stderr}")
 
-        # Update status
-        for content in uploaded_content:
-            if content.get("id") == content_id:
-                content["status"] = "processing"
-                content["file_path"] = video_path
-                break
+        _update_content_db_status(content_id, "processing")
 
         # Process the video using the existing pipeline
-        result = process_video_upload(video_path, video_name, content_id)
+        result = process_video_upload(video_path, video_name, content_id, rag_pipeline=rag_pipeline)
 
-        # Update status
-        for content in uploaded_content:
-            if content.get("id") == content_id:
-                if result.get("success"):
-                    content["status"] = "completed"
-                    content["processing_result"] = result
-                else:
-                    content["status"] = "failed"
-                    content["error"] = result.get("error", "Unknown error")
-                break
+        if result.get("success"):
+            _update_content_db_status(content_id, "completed", result=result)
+        else:
+            _update_content_db_status(content_id, "failed", error=result.get("error", "Unknown error"))
 
         # Clean up temp directory
         shutil.rmtree(temp_dir)
@@ -465,9 +457,4 @@ def process_youtube_video_background(content_id: str, youtube_url: str):
 
     except Exception as e:
         logger.error(f"Error in background YouTube video processing: {str(e)}")
-        # Update status to failed
-        for content in uploaded_content:
-            if content.get("id") == content_id:
-                content["status"] = "failed"
-                content["error"] = str(e)
-                break
+        _update_content_db_status(content_id, "failed", error=str(e))

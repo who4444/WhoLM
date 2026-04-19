@@ -89,7 +89,88 @@ class PostgresDB:
                 CREATE INDEX IF NOT EXISTS idx_contexts_last_activity ON conversation_contexts(last_activity);
             """)
 
+            # Content uploads table — replaces in-memory uploaded_content list
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS content_uploads (
+                    id SERIAL PRIMARY KEY,
+                    content_id VARCHAR(255) UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    content_type VARCHAR(100) NOT NULL,
+                    storage_path TEXT,
+                    youtube_url TEXT,
+                    status VARCHAR(50) DEFAULT 'pending',
+                    error TEXT,
+                    processing_result JSONB,
+                    upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_content_uploads_status ON content_uploads(status);
+            """)
+
             logger.info("Database tables created successfully")
+
+    # ──────────────────────────────────────────────
+    #  Content Uploads CRUD
+    # ──────────────────────────────────────────────
+
+    def insert_content(self, content_id: str, name: str, content_type: str,
+                       storage_path: str = None, youtube_url: str = None,
+                       status: str = "processing") -> None:
+        """Insert a new content upload record."""
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO content_uploads (content_id, name, content_type, storage_path, youtube_url, status)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (content_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    status = EXCLUDED.status,
+                    updated_at = CURRENT_TIMESTAMP;
+            """, (content_id, name, content_type, storage_path, youtube_url, status))
+
+    def update_content_status(self, content_id: str, status: str,
+                               error: str = None, processing_result: dict = None) -> None:
+        """Update the status of a content upload."""
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE content_uploads
+                SET status = %s, error = %s, processing_result = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE content_id = %s;
+            """, (status, error, json.dumps(processing_result) if processing_result else None,
+                  content_id))
+
+    def get_all_content(self) -> List[Dict[str, Any]]:
+        """Get all uploaded content records."""
+        with self.connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("""
+                SELECT content_id, name, content_type, storage_path, youtube_url,
+                       status, error, processing_result, upload_time
+                FROM content_uploads
+                ORDER BY upload_time DESC;
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_content_by_id(self, content_id: str) -> Optional[Dict[str, Any]]:
+        """Get a single content record by ID."""
+        with self.connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("""
+                SELECT content_id, name, content_type, storage_path, youtube_url,
+                       status, error, processing_result, upload_time
+                FROM content_uploads
+                WHERE content_id = %s;
+            """, (content_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+
+    def delete_content(self, content_id: str) -> bool:
+        """Delete a content record. Returns True if a row was deleted."""
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                DELETE FROM content_uploads WHERE content_id = %s;
+            """, (content_id,))
+            return cursor.rowcount > 0
 
     def insert_message(self, message_id: str, session_id: str, role: str,
                       content: str, timestamp: datetime, metadata: Dict[str, Any],

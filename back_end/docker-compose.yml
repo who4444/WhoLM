@@ -3,59 +3,71 @@ version: '3.8'
 services:
   db:
     image: postgres:15
-    container_name: video_qa_db
+    container_name: wholm_db
     environment:
-      POSTGRES_USER: video_qa_user
-      POSTGRES_PASSWORD: secure_password
-      POSTGRES_DB: video_qa_db
+      POSTGRES_USER: ${POSTGRES_USER:-wholm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-wholm_db}
     volumes:
       - db_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U video_qa_user"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wholm_user}"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - video_qa_network
+      - wholm_network
 
   qdrant:
-    image: qdrant/qdrant:v1.2.0
-    container_name: video_qa_qdrant
+    image: qdrant/qdrant:v1.12.5
+    container_name: wholm_qdrant
     ports:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
-      - video_qa_network
+      - wholm_network
 
   backend:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: video_qa_backend
+    container_name: wholm_backend
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
-      DATABASE_URL: postgresql://video_qa_user:secure_password@db:5432/video_qa_db
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-wholm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-wholm_db}
       QDRANT_URL: http://qdrant:6333
+      CORS_ORIGINS: "http://localhost:8501,http://frontend:8501"
     depends_on:
       db:
         condition: service_healthy
       qdrant:
-        condition: service_started
+        condition: service_healthy
     volumes:
-      - ./:/app
+      - bm25_data:/app/bm25_data
     networks:
-      - video_qa_network
+      - wholm_network
 
   frontend:
     build:
       context: ../front_end
       dockerfile: Dockerfile
-    container_name: video_qa_frontend
+    container_name: wholm_frontend
     ports:
       - "8501:8501"
     depends_on:
@@ -63,13 +75,13 @@ services:
     environment:
       BACKEND_URL: http://backend:8000
     networks:
-      - video_qa_network
+      - wholm_network
 
 volumes:
   db_data:
   qdrant_data:
+  bm25_data:
 
 networks:
-  video_qa_network:
+  wholm_network:
     driver: bridge
-    

@@ -246,7 +246,21 @@ class QdrantDB:
         except Exception as e:
             logger.error(f"Error searching frame collection: {e}")
         
-        # Sort by score descending and limit total results
+        # Normalize scores per collection to [0, 1] for fair cross-modal comparison
+        # (BGE-M3 and CLIP produce scores on different scales)
+        for group_type in ["document", "frame"]:
+            group = [r for r in combined_results if r["collection_type"] == group_type]
+            if not group:
+                continue
+            scores = [r["score"] for r in group]
+            max_s = max(scores)
+            min_s = min(scores)
+            range_s = max_s - min_s if max_s != min_s else 1
+            for r in group:
+                r["raw_score"] = r["score"]
+                r["score"] = (r["score"] - min_s) / range_s
+
+        # Sort by normalized score descending and limit total results
         combined_results.sort(key=lambda x: x["score"], reverse=True)
         return combined_results[:limit * 2]
 

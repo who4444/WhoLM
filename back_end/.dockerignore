@@ -1,0 +1,44 @@
+# Version control
+.git
+.gitignore
+
+# Python caches
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.eggs
+
+# Virtual environments
+venv
+.venv
+env
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Temporary files
+tmp/
+*.tmp
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+LICENSE
+
+# Environment files (sensitive!)
+.env
+
+# Test & evaluation data
+tests/
+evaluation/results/
+
+# BM25 index (rebuilt on startup/ingestion)
+bm25_data/

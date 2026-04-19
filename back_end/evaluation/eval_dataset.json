@@ -1,0 +1,72 @@
+[
+  {
+    "id": "eval_001",
+    "question": "What is the main topic discussed in the video?",
+    "relevant_doc_ids": [],
+    "expected_answer": null,
+    "notes": "Replace relevant_doc_ids with actual doc IDs from your Qdrant collection. Use GET /admin/rag-stats to verify data exists."
+  },
+  {
+    "id": "eval_002",
+    "question": "What are the key points from the document?",
+    "relevant_doc_ids": [],
+    "expected_answer": null,
+    "notes": "Populate with doc IDs matching this query from your indexed content."
+  },
+  {
+    "id": "eval_003",
+    "question": "Can you summarize the introduction section?",
+    "relevant_doc_ids": [],
+    "expected_answer": null,
+    "notes": "Targets document chunks from the beginning of an uploaded document."
+  },
+  {
+    "id": "eval_004",
+    "question": "What happens at the 2 minute mark of the video?",
+    "relevant_doc_ids": [],
+    "expected_answer": null,
+    "notes": "Tests temporal retrieval from video transcripts."
+  },
+  {
+    "id": "eval_005",
+    "question": "What visual elements are shown in the presentation?",
+    "relevant_doc_ids": [],
+    "expected_answer": null,
+    "notes": "Tests frame retrieval via CLIP embeddings."
+  },
+  {
+    "id": "eval_006",
+    "question": "Explain the methodology described in the document.",
+    "relevant_doc_ids": [],
+    "expected_answer": null,
+    "notes": "Tests dense retrieval for technical content."
+  },
+  {
+    "id": "eval_007",
+    "question": "Who is the speaker in the video?",
+    "relevant_doc_ids": [],
+    "expected_answer": null,
+    "notes": "Tests keyword-heavy query (BM25 should help here)."
+  },
+  {
+    "id": "eval_008",
+    "question": "What conclusions are drawn at the end?",
+    "relevant_doc_ids": [],
+    "expected_answer": null,
+    "notes": "Tests retrieval of conclusion sections."
+  },
+  {
+    "id": "eval_009",
+    "question": "What data or statistics are mentioned?",
+    "relevant_doc_ids": [],
+    "expected_answer": null,
+    "notes": "Tests retrieval of factual/numerical content."
+  },
+  {
+    "id": "eval_010",
+    "question": "Compare the topics discussed in the first and last parts.",
+    "relevant_doc_ids": [],
+    "expected_answer": null,
+    "notes": "Tests multi-chunk retrieval coverage."
+  }
+]

@@ -51,6 +51,4 @@ class Config:
     POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
 
     # Other configurations
-    DEDUP_THRESHOLD: float = 0.9
-    DEDUP_WINDOW : int = 5  
     VIDEO_KEYFRAME_FPS: float = 1.0  # Extract 1 frame per second

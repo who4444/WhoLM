@@ -290,7 +290,7 @@ def extract_citations_from_context(context: str) -> List[Dict[str, str]]:
     for i, section in enumerate(sections, 1):
         lines = section.strip().split("\n", 1)
         if len(lines) >= 1:
-            header = lines[i]
+            header = lines[0]
             content = lines[1] if len(lines) > 1 else ""
             
             citation = {
