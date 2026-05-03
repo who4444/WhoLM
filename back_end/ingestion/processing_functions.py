@@ -95,7 +95,7 @@ def process_video_upload(file_path: str, video_name: str, content_id: str = None
         logger.info("Step 2: Extracting video frames...")
         if content_id:
             update_status(content_id, "processing", {"stage": "extracting_frames"})
-        frames_result = frame_extractor.process_video(file_path, Config.DEDUP_THRESHOLD, Config.DEDUP_THRESHOLD)
+        frames_result = frame_extractor.process_video(file_path, Config.DEDUP_THRESHOLD, Config.DEDUP_WINDOW)
 
         # Step 3: Generate embeddings and store
         logger.info("Step 3: Generating and storing embeddings...")

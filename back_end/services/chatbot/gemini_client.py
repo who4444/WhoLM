@@ -1,23 +1,34 @@
+import os
+import logging
 from dotenv import load_dotenv
 from llama_index.llms.gemini import Gemini
-from FlagEmbedding import BGEM3FlagModel 
-import os
-from llama_index.core import Settings
 
 load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL")
 
-# loads models
-llm = Gemini(model_name=GEMINI_MODEL, api_key=GOOGLE_API_KEY)
-Settings.llm = llm
+logger = logging.getLogger(__name__)
+
+_llm = None
+
+
+def _get_llm():
+    global _llm
+    if _llm is None:
+        api_key = os.getenv("GOOGLE_GEMINI_API_KEY")
+        model = os.getenv("GEMINI_MODEL")
+        if not api_key:
+            raise RuntimeError("GOOGLE_GEMINI_API_KEY not set")
+        if not model:
+            raise RuntimeError("GEMINI_MODEL not set")
+        logger.info(f"Initializing Gemini LLM: {model}")
+        _llm = Gemini(model_name=model, api_key=api_key)
+    return _llm
 
 
 def generate_response(sys_prompt, context, query):
     formatted_prompt = f"""
     {sys_prompt}
 
-    Using only the following context information, answer the user's query. 
+    Using only the following context information, answer the user's query.
     If the answer is not in the context, say "I don't know".
 
     ### Context:
@@ -28,11 +39,6 @@ def generate_response(sys_prompt, context, query):
 
     ### Answer:
     """
+    llm = _get_llm()
     response = llm.complete(formatted_prompt)
     return response.text
-
-
-
-
-
-

@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 
 from .routes import router
+from .rate_limiter import RateLimitMiddleware
 
 
 def create_app() -> FastAPI:
@@ -27,8 +28,18 @@ def create_app() -> FastAPI:
         allow_origins=[o.strip() for o in allowed_origins],
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE"],
-        allow_headers=["*"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-Admin-Key",
+            "X-Request-ID",
+            "Accept",
+        ],
     )
+
+    # Global rate limit: 60 requests/min per client IP
+    app.add_middleware(RateLimitMiddleware, requests_per_minute=60)
+
     app.include_router(router)
 
     return app
